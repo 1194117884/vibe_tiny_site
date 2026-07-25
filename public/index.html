@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TinySite · 静态网站部署平台</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚡</text></svg>" />
+  <script>
+    (() => {
+      const mode = localStorage.getItem('tinysite-theme') || 'auto';
+      const hour = new Date().getHours();
+      document.documentElement.dataset.theme = mode === 'light' || mode === 'dark' ? mode : (hour >= 7 && hour < 19 ? 'light' : 'dark');
+    })();
+  </script>
+  <link rel="stylesheet" href="/style.css?v=20260725-theme-audit" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="wrap topbar-inner">
+      <a class="brand" href="#/">
+        <span class="brand-logo"><i data-lucide="zap" aria-hidden="true"></i></span>
+        <span class="brand-name">TinySite</span>
+        <span class="brand-tag">静态网站部署平台</span>
+      </a>
+      <span class="topbar-env">静态网站工作台</span>
+      <label class="theme-control" title="外观主题"><i data-lucide="sun-moon" aria-hidden="true"></i><select id="theme-mode" aria-label="外观主题"><option value="auto">自动</option><option value="light">浅色</option><option value="dark">深色</option></select></label>
+      <span id="account-slot"></span>
+    </div>
+  </header>
+
+  <main id="app" class="wrap"></main>
+
+  <div id="toast-root"></div>
+  <div id="modal-root"></div>
+
+  <script src="/lucide.min.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
