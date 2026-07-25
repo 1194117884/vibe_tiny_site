@@ -1,108 +1,162 @@
-# ⚡ TinySite · 静态网站部署工具
+# TinySite
 
-基于 **Cloudflare Workers + R2 + D1** 的轻量静态网站托管与部署平台：将 AI 生成的 HTML、dist 目录或 Markdown 文档拖入上传 → 自动发布新版本 → 获得固定访问地址 → 一键回滚历史版本。
+一个面向个人与小团队的静态网站发布平台。用户创建项目后，可上传 HTML、构建产物目录或 ZIP 包；文件修改会先进入草稿，确认后作为一个可回滚版本上线。
 
-## 功能
+> Open-source note: this repository contains no production credentials or deployment configuration. Copy `wrangler.example.toml` to a private `wrangler.toml` and use your own domain and resources.
 
-| 功能 | 说明 |
+## 能力概览
+
+- 账号体系：邮箱注册、登录、修改密码、会话管理与用户资源隔离。
+- 项目工作区：文件树、任意当前目录拖拽上传、目录上传、ZIP 解压、新建文件夹、右键下载/删除。
+- 草稿发布：将新增、替换、删除汇集为一组草稿操作，发布时原子生成新版本。
+- 版本管理：版本备注、改动明细、历史版本独立地址、分页与一键回滚。
+- 网站访问：固定地址始终指向当前版本；历史版本保持独立可访问。
+- 默认页面：项目创建时自动准备 `index.html`、`404.html` 与 `50x.html`。
+- 套餐与配额：Free / Pro / Plus / Ultra，按项目数、存储与月流量限制资源。
+- 套餐权益队列：不同套餐按优先级排期；同套餐也独立排队，避免合并造成退款或核销歧义。
+- 运营后台：用户、项目、版本、赠送码、套餐权益及审计记录管理。
+- 外观：自动（按本地时间）、浅色、深色三种主题，本机记忆选择。
+
+## 访问规则
+
+| 场景 | 地址 |
 | --- | --- |
-| 项目管理 | 创建项目（每个项目 = 独立网站空间）、列表查看、按名称 / slug 搜索、删除项目 |
-| 拖拽部署 | 拖入 HTML 文件或整个 dist 目录，分批上传 + 实时进度条，上传完成即自动发布新版本 |
-| ZIP 制品发布 | 直接上传 AI 工具导出的 ZIP，自动解压并去除顶层目录后发布 |
-| Markdown 发布 | 上传包含 `index.md` 的目录，自动渲染为适合分享的响应式文档页 |
-| 版本管理 | 每次部署生成版本记录（部署时间、文件数、总大小、状态），支持一键回滚到任意历史版本 |
-| 访问地址 | 固定地址 `https://{slug}-ts.yongkl.cc/` 永远指向当前版本；历史版本通过 `https://{slug}-v{version}-ts.yongkl.cc/` 独立访问 |
-| 默认页面 | 创建项目时生成并发布 `index.html` 模板；其他 HTML 文件可通过 `/{文件名}` 访问 |
+| 管理站 | `https://console.example.com` |
+| 运营后台 | `https://admin-console.example.com` |
+| 项目当前版本 | `https://{slug}-site.example.com/` |
+| 项目历史版本 | `https://{slug}-v{version}-site.example.com/` |
+| 本地当前版本 | `http://localhost:8787/s/{slug}/` |
+| 本地历史版本 | `http://localhost:8787/v/{slug}/{version}/` |
 
-## 架构
+项目固定地址适合正式站点；历史版本地址适合预览、回归测试和临时保留旧页面。长期运营的多个独立网站应建立多个项目，避免配额、权限和发布节奏互相影响。
 
-```
-┌────────────┐   拖拽上传(分批 multipart + XHR 进度)
-│  管理后台   │ ──────────────────────────────┐
-│ public/    │                               ▼
-│ (ASSETS)   │   ┌───────────────────────────────────────┐
-└────────────┘   │           Cloudflare Worker           │
-                 │  /api/*   管理接口（项目/版本/回滚）    │
-  访客浏览器 ───▶ │  {slug}-ts.yongkl.cc → 当前版本        │
-                 │  {slug}-v{n}-ts.yongkl.cc → 历史        │
-                 └───────┬───────────────┬───────────────┘
-                         │               │
-                    ┌────▼───┐      ┌────▼─────────────────┐
-                    │   D1   │      │  R2                  │
-                    │ 元数据  │      │ 站点文件对象存储       │
-                    └────────┘      └──────────────────────┘
+## 发布模型
+
+```text
+上传 / 删除文件
+        ↓
+草稿操作（新增、替换、删除）
+        ↓
+发布一个新版本
+        ↓
+更新项目当前文件树与固定地址
+        ↓
+保留历史快照，可访问、可回滚
 ```
 
-## API 路由设计
+每个版本只记录本次变更的文件操作，当前文件树用于快速读取线上内容。回滚会恢复被替换/删除的旧文件，并删除目标版本之后新增的文件；回滚本身也会生成新的发布版本。
 
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| POST | `/api/projects` | 创建项目 `{ name }` |
-| GET | `/api/projects?q=` | 项目列表 / 搜索 |
-| GET | `/api/projects/:id` | 项目详情 |
-| DELETE | `/api/projects/:id` | 删除项目（含 R2 全部文件） |
-| GET | `/api/projects/:id/versions` | 版本列表 |
-| POST | `/api/projects/:id/versions` | 创建新版本（开始一次部署） |
-| POST | `/api/projects/:id/rollback` | 回滚 `{ versionId }` |
-| POST | `/api/versions/:id/files` | 上传文件批次（multipart，`path_N` + `file_N`） |
-| POST | `/api/versions/:id/finalize` | 完成部署并发布为当前版本 |
-| POST | `/api/versions/:id/abort` | 中止部署并清理残留 |
-| GET | `https://{slug}-ts.yongkl.cc/*` | 固定地址，始终指向当前发布版本 |
-| GET | `https://{slug}-v{version}-ts.yongkl.cc/*` | 历史版本地址 |
+## 技术结构
 
-部署采用三段式：**创建版本 → 分批上传文件 → finalize 发布**。回滚只是切换 `projects.current_version_id` 指针，历史版本文件全量保留，因此回滚秒级完成，且可以随时再切回新版本。
-
-## D1 表结构
-
-见 [schema.sql](./schema.sql)，三张表：
-
-- **projects** `id / name / slug(唯一) / created_at / current_version_id` — 项目与当前版本指针
-- **versions** `id / project_id / version(项目内递增) / file_count / total_size / status(uploading|active|failed) / created_at`
-- **files** `version_id / path / r2_key / size / mime` — 每个版本的文件清单
-
-## R2 目录规划
-
-```
-sites/{projectId}/v{version}/{文件相对路径}
-├── sites/p_x8k2n1a9q3/v1/index.html
-├── sites/p_x8k2n1a9q3/v1/assets/app.a1b2c3.js
-├── sites/p_x8k2n1a9q3/v2/index.html
-└── ...
-
-sites/{projectId}/defaults/{index.html,404.html,50x.html}
+```text
+public/        管理界面静态资源
+src/worker.js  Worker、鉴权、部署、文件服务与运营 API
+src/ui.css     Tailwind / daisyUI 输入样式
+migrations/    生产环境增量数据库迁移
+schema.sql     全新环境初始化结构
+wrangler.toml  Worker、数据库、对象存储与域名路由配置
 ```
 
-每个版本全量独立存储，天然支持版本隔离与任意回滚；删除项目 / 中止部署时按前缀批量清理。
+对象存储按项目和版本隔离：
 
-## 快速开始
+```text
+sites/{projectId}/v{version}/{path}
+```
+
+## 本地开发
+
+### 前置条件
+
+- Node.js 20+
+- 已登录的 Wrangler CLI 账号
+
+### 启动
 
 ```bash
-# 1. 安装依赖
 npm install
-
-# 2. 初始化本地数据库并启动
 npm run db:init:local
-npm run dev          # http://localhost:8787
+npm run dev
+```
 
-# 3. 部署到 Cloudflare
-npm run db:create    # 创建 D1,把输出的 database_id 填入 wrangler.toml
+访问 `http://localhost:8787`。本地数据库仅用于开发；不要把本地种子数据、账号数据或 `.dev.vars` 提交到仓库。
+
+修改界面样式后，可单独生成静态样式：
+
+```bash
+npm run ui:build
+```
+
+## 部署新环境
+
+1. 复制配置模板，并在私有 `wrangler.toml` 中填写项目名、数据库名、对象存储桶名、根域名和项目域名后缀。
+2. 创建数据库并将输出的 `database_id` 写入 `wrangler.toml`。
+3. 创建对象存储桶。
+4. 初始化全新生产数据库。
+5. 在域名托管平台配置管理站、运营后台和项目泛域名路由。
+6. 发布 Worker。
+
+```bash
+cp wrangler.example.toml wrangler.toml
+npm run db:create
+npm run r2:create
 npm run db:init:remote
-npm run r2:create    # 创建 R2 存储桶
 npm run deploy
 ```
 
-本地初始化只会创建管理员账号：`qq1194117884@gmail.com` / `LocalAdmin!2026`。该账号仅由 `seed.local.sql` 创建，不会出现在远程数据库初始化中。
+`db:init:remote` 仅适用于全新数据库。已有生产库必须按 `migrations/` 中的顺序执行尚未应用的迁移，例如：
 
-## 使用说明
+```bash
+wrangler d1 execute tinysite_db --remote --file=./migrations/0004_plan_entitlements.sql
+```
 
-1. 打开管理后台 →「新建项目」
-2. 进入项目，把编译产物（整个 `dist` 目录或若干 HTML 文件）拖入虚线框
-3. 点击「开始部署」，进度条实时展示上传进度，完成后自动发布为新版本
-4. 固定地址 `https://{slug}-ts.yongkl.cc/` 立即更新；历史版本可在下方表格中访问独立地址或回滚
+## 常用命令
 
-## 注意事项
+| 命令 | 用途 |
+| --- | --- |
+| `npm run dev` | 本地启动 Worker |
+| `npm run ui:build` | 构建管理界面样式 |
+| `npm run deploy` | 构建样式并发布 |
+| `npm run db:create` | 创建数据库 |
+| `npm run db:init:local` | 初始化本地开发数据库 |
+| `npm run db:init:remote` | 初始化全新生产数据库 |
+| `npm run r2:create` | 创建对象存储桶 |
 
-- **资源路径**：每个项目独占子域名根路径，`/assets/...` 等绝对资源路径可正常使用；相对路径同样兼容。
-- **SPA 支持**：无扩展名的路径自动回退到 `index.html`；站点自带 `404.html` 时会用于 404 页面。
-- **上传限制**：前端按「≤20 个文件 且 ≤30MB」分批上传；ZIP 最大 30MB、解压后最大 100MB / 1000 个文件；单请求体积受 Cloudflare Workers 套餐限制（免费版 100MB）。
-- 管理后台本身无鉴权，公网部署建议套一层 Cloudflare Access 或自行在 Worker 里加访问控制。
+## 数据与权限
+
+- 项目、版本、当前文件树与审计记录均按 `user_id` 归属。
+- 用户只能读取和操作自己的项目、版本与文件。
+- 运营接口仅对管理员角色开放。
+- 登录态由安全 Cookie 保存；密码使用 PBKDF2 加盐派生后存储。
+- 访问网站的流量以异步方式累加，避免影响正常静态文件响应；每月按自然月独立统计。
+- 上传前检查存储额度，删除文件或项目会同步释放已占用空间。
+
+## 安全与提交约定
+
+- 不提交 `.dev.vars`、真实密钥、Cookie、数据库导出、用户数据、本地种子数据或本地工具目录。
+- `seed.local.sql` 与 `wrangler.toml` 仅供本机/私有环境使用，已在 `.gitignore` 中忽略。
+- 生产配置中的资源标识不是密钥；访问令牌、私钥和第三方密钥必须只放在部署环境的机密配置中。
+- 提交前执行：
+
+```bash
+git status --short
+git diff --check
+npm run ui:build
+node --check public/app.js
+node --check src/worker.js
+```
+
+## 当前非目标
+
+- 真实支付、订单与退款通道尚未接入；当前可通过后台赠送套餐权益进行内测。
+- 自定义域名绑定、通知渠道、文件预览和更细粒度的版本保留策略可在后续迭代中补充。
+
+## Contributing and security
+
+- Contributor workflow: [CONTRIBUTING.md](./CONTRIBUTING.md)
+- Security reporting policy: [SECURITY.md](./SECURITY.md)
+- Architecture reference: [docs/architecture.md](./docs/architecture.md)
+- Instructions for AI coding agents: [AGENTS.md](./AGENTS.md)
+
+## License
+
+No open-source license has been selected yet. Choose and add a license before publishing the repository publicly; without one, others do not have permission to reuse, modify, or distribute the code.

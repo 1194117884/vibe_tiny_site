@@ -1,0 +1,29 @@
+name = "tinysite"
+main = "src/worker.js"
+compatibility_date = "2025-06-01"
+
+# Copy this file to wrangler.toml, then replace every placeholder before deploying.
+workers_dev = false
+routes = [
+  { pattern = "console.example.com", custom_domain = true },
+  { pattern = "admin-console.example.com", custom_domain = true },
+  { pattern = "*-site.example.com/*", zone_name = "example.com" },
+]
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+run_worker_first = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "tinysite_db"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "tinysite-sites"
+
+[vars]
+SITE_BASE_DOMAIN = "example.com"
+SITE_HOST_SUFFIX = "-site"
