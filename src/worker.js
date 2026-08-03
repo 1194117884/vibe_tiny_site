@@ -16,6 +16,7 @@ import { unzipSync } from 'fflate';
  *   POST   /api/projects                  创建项目        { name }
  *   GET    /api/projects?q=               项目列表 / 按名称、slug 搜索
  *   GET    /api/projects/:id              项目详情
+ *   PATCH  /api/projects/:id              更新项目        { name }
  *   DELETE /api/projects/:id              删除项目（含 R2 全部文件）
  *   GET    /api/projects/:id/versions     版本列表
  *   POST   /api/projects/:id/versions     创建新版本（开始一次部署）
@@ -759,6 +760,28 @@ async function getProject(request, env, url, { id }) {
   return json({ project: p });
 }
 
+/** PATCH /api/projects/:id  更新项目信息（目前仅支持修改显示名称） */
+async function updateProject(request, env, url, { id }) {
+  const existing = await env.DB.prepare(`
+    SELECT p.*, cv.version AS current_version
+    FROM projects p LEFT JOIN versions cv ON cv.id = p.current_version_id
+    WHERE p.id = ?`).bind(id).first();
+  if (!existing) return json({ error: '项目不存在' }, 404);
+
+  const body = await request.json().catch(() => ({}));
+  if (!Object.prototype.hasOwnProperty.call(body, 'name')) {
+    return json({ error: '请提供要更新的字段' }, 400);
+  }
+  const name = String(body.name || '').trim();
+  if (!name) return json({ error: '项目名称不能为空' }, 400);
+  if (name.length > 60) return json({ error: '项目名称不能超过 60 个字符' }, 400);
+
+  if (name !== existing.name) {
+    await env.DB.prepare('UPDATE projects SET name = ? WHERE id = ?').bind(name, id).run();
+  }
+  return json({ project: { ...existing, name } });
+}
+
 /** DELETE /api/projects/:id  删除项目（含 R2 文件与 D1 记录） */
 async function deleteProject(request, env, url, { id }) {
   const p = await env.DB.prepare('SELECT id FROM projects WHERE id = ?').bind(id).first();
@@ -1291,6 +1314,7 @@ const apiRoutes = [
   ['POST', '/api/projects', createProject],
   ['GET', '/api/projects', listProjects],
   ['GET', '/api/projects/:id', getProject],
+  ['PATCH', '/api/projects/:id', updateProject],
   ['GET', '/api/projects/:id/files', listProjectFiles],
   ['GET', '/api/projects/:id/download', downloadProjectFile],
   ['DELETE', '/api/projects/:id', deleteProject],

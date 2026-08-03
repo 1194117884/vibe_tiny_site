@@ -149,6 +149,7 @@ function openModal({ title, desc, bodyHTML, okText = '确定', danger = false })
     const input = $('input', overlay);
     if (input) {
       input.focus();
+      if (input.value) input.select();
       input.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') $('[data-act="ok"]', overlay).click();
       });
@@ -158,6 +159,14 @@ function openModal({ title, desc, bodyHTML, okText = '确定', danger = false })
 
 const promptModal = (title, placeholder) =>
   openModal({ title, bodyHTML: `<input type="text" placeholder="${esc(placeholder)}" maxlength="60" />`, okText: '创建' });
+
+const editTextModal = (title, desc, value, okText = '保存') =>
+  openModal({
+    title,
+    desc,
+    bodyHTML: `<input type="text" value="${esc(value)}" maxlength="60" />`,
+    okText,
+  });
 
 const confirmModal = (title, desc, okText = '确认', danger = false) =>
   openModal({ title, desc, okText, danger });
@@ -199,6 +208,7 @@ const api = {
   listProjects: (q) => req('/api/projects' + (q ? `?q=${encodeURIComponent(q)}` : '')),
   createProject: (name) => req('/api/projects', { method: 'POST', body: JSON.stringify({ name }) }),
   getProject: (id) => req(`/api/projects/${id}`),
+  updateProject: (id, data) => req(`/api/projects/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteProject: (id) => req(`/api/projects/${id}`, { method: 'DELETE' }),
   listVersions: (id, page = 1) => req(`/api/projects/${id}/versions?page=${page}`),
   listFiles: (id) => req(`/api/projects/${id}/files`),
@@ -560,7 +570,15 @@ async function renderProject(id) {
     <div class="project-workbench">
       <main class="project-main">
         <div class="workspace-kicker"><i data-lucide="folder-kanban"></i> PROJECT WORKSPACE</div>
-        <div class="page-head project-head"><div><h1 class="page-title">${esc(project.name)} <span class="slug-chip">${esc(project.slug)}</span></h1><div class="page-sub">在这里整理文件，并将一组变更发布为新版本。</div></div></div>
+        <div class="page-head project-head">
+          <div>
+            <h1 class="page-title"><span id="project-name">${esc(project.name)}</span> <span class="slug-chip">${esc(project.slug)}</span></h1>
+            <div class="page-sub">在这里整理文件，并将一组变更发布为新版本。</div>
+          </div>
+          <div class="page-actions">
+            <button class="btn btn-sm btn-ghost" id="btn-edit-project" type="button"><i data-lucide="pencil"></i>编辑项目</button>
+          </div>
+        </div>
         <div class="card deploy-card">
       <div class="workspace-head">
         <div><h2 class="section-title">文件工作区</h2><p>所有操作先进入草稿，发布版本时才一次性上线。右键文件、文件夹或空白区域可查看更多操作。</p></div>
@@ -593,14 +611,50 @@ async function renderProject(id) {
         <div class="card versions-card"><h2 class="section-title">🕘 历史版本</h2><div id="versions-body"></div></div>
       </main>
       <aside class="project-rail">
-        <div class="rail-head"><span>项目状态</span><i data-lucide="radio"></i></div>
+        <div class="rail-head"><span>项目信息</span><i data-lucide="info"></i></div>
+        <div class="project-rail-block">
+          <span>项目名称</span>
+          <strong id="rail-project-name">${esc(project.name)}</strong>
+          <small>创建于 ${fmtTime(project.created_at)} · 标识 ${esc(project.slug)}</small>
+          <div class="rail-actions"><button class="btn btn-sm btn-ghost" id="btn-edit-project-rail" type="button"><i data-lucide="pencil"></i>编辑</button></div>
+        </div>
         <div class="project-rail-block"><span>固定访问地址</span><code>${siteUrl(project.slug)}</code><div class="rail-actions"><button class="btn btn-sm btn-ghost" id="btn-copy">复制</button><a class="btn btn-sm btn-ghost" href="${siteUrl(project.slug)}" target="_blank" rel="noopener">打开 ↗</a></div></div>
         <div class="project-rail-block"><span>当前上线版本</span><strong>${project.current_version ? `v${project.current_version}` : '尚未发布'}</strong><small>${project.current_version ? '固定地址正指向此版本' : '发布文件后即可访问'}</small></div>
         <div class="project-rail-block rail-danger"><span>危险操作</span><small>删除项目会同时删除全部版本文件。</small><button class="btn btn-danger" id="btn-del">删除项目</button></div>
       </aside>
     </div>`;
 
-  // ---- 固定地址 ----
+  // ---- 项目信息 / 固定地址 ----
+  function applyProjectName(name) {
+    project.name = name;
+    const title = $('#project-name');
+    if (title) title.textContent = name;
+    const railName = $('#rail-project-name');
+    if (railName) railName.textContent = name;
+  }
+
+  async function editProject() {
+    const name = await editTextModal(
+      '编辑项目',
+      '修改项目显示名称。固定访问地址不会改变。',
+      project.name,
+      '保存'
+    );
+    if (name == null) return;
+    if (!name) {
+      toast('项目名称不能为空', 'error');
+      return;
+    }
+    if (name === project.name) return;
+    try {
+      const { project: updated } = await api.updateProject(project.id, { name });
+      applyProjectName(updated.name);
+      toast('项目信息已更新');
+    } catch (e) { toast(e.message, 'error'); }
+  }
+
+  $('#btn-edit-project').onclick = editProject;
+  $('#btn-edit-project-rail').onclick = editProject;
   $('#btn-copy').onclick = () => copyText(siteUrl(project.slug)).then(() => toast('访问地址已复制'));
 
   $('#btn-del').onclick = async () => {
@@ -787,6 +841,27 @@ async function renderProject(id) {
 
   function fileName(path) { return path.slice(path.lastIndexOf('/') + 1); }
 
+  function fileIcon(name) {
+    const ext = name.split('.').pop().toLowerCase();
+    if (['html', 'htm'].includes(ext)) return ['file-code-2', 'markup'];
+    if (['css', 'scss', 'sass', 'less'].includes(ext)) return ['palette', 'style'];
+    if (['js', 'mjs', 'cjs', 'ts', 'tsx', 'jsx', 'vue', 'svelte'].includes(ext)) return ['file-code-2', 'script'];
+    if (['json', 'jsonc', 'xml', 'yaml', 'yml', 'toml'].includes(ext)) return ['file-json-2', 'data'];
+    if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico', 'avif'].includes(ext)) return ['file-image', 'image'];
+    if (['mp3', 'wav', 'ogg', 'm4a', 'aac', 'flac'].includes(ext)) return ['file-audio-2', 'audio'];
+    if (['mp4', 'webm', 'mov', 'avi', 'mkv'].includes(ext)) return ['file-video-2', 'video'];
+    if (['zip', 'rar', '7z', 'tar', 'gz', 'bz2'].includes(ext)) return ['file-archive', 'archive'];
+    if (['csv', 'xls', 'xlsx', 'ods'].includes(ext)) return ['file-spreadsheet', 'sheet'];
+    if (['pdf', 'md', 'txt', 'doc', 'docx', 'rtf'].includes(ext)) return ['file-text', 'text'];
+    if (['woff', 'woff2', 'ttf', 'otf'].includes(ext)) return ['file-type-2', 'font'];
+    return ['file', 'default'];
+  }
+
+  function fileIconHTML(name) {
+    const [icon, type] = fileIcon(name);
+    return `<i class="file-icon ${type}" data-lucide="${icon}" aria-hidden="true"></i>`;
+  }
+
   function renderFileWorkspace() {
     const current = new Map((currentFilesData.files || []).map((file) => [file.path, file]));
     const staged = new Map(selected.map((file) => [file.path, file]));
@@ -813,8 +888,8 @@ async function renderProject(id) {
     $('#file-breadcrumb').textContent = activeDir ? `根目录 / ${activeDir}` : '根目录';
     $('#file-count').textContent = `${children.length + files.length} 项 · 右键操作`;
     $('#file-list').innerHTML = [...children, ...files].map((item) => item.type === 'dir'
-      ? `<button class="file-row dir" data-open-dir="${esc(item.path)}"><span class="file-icon">📁</span><span>${esc(item.name)}</span><small>文件夹</small></button>`
-      : `<div class="file-row ${item.state !== 'keep' ? 'is-' + item.state : ''}" data-file="${esc(item.path)}"><span class="file-icon">${item.name.endsWith('.html') ? '◫' : '▤'}</span><span>${esc(item.name)}</span><small>${fmtBytes(item.size)}</small>${item.state !== 'keep' ? `<b class="change-tag ${item.state}">${({ add: '新增', replace: '替换', delete: '删除' })[item.state]}</b>` : ''}</div>`).join('') || '<div class="file-empty">当前目录为空。拖入文件即可加入部署草稿。</div>';
+      ? `<button class="file-row dir" data-open-dir="${esc(item.path)}"><i class="file-icon folder" data-lucide="folder" aria-hidden="true"></i><span>${esc(item.name)}</span><small>文件夹</small></button>`
+      : `<div class="file-row ${item.state !== 'keep' ? 'is-' + item.state : ''}" data-file="${esc(item.path)}">${fileIconHTML(item.name)}<span>${esc(item.name)}</span><small>${fmtBytes(item.size)}</small>${item.state !== 'keep' ? `<b class="change-tag ${item.state}">${({ add: '新增', replace: '替换', delete: '删除' })[item.state]}</b>` : ''}</div>`).join('') || '<div class="file-empty">当前目录为空。拖入文件即可加入部署草稿。</div>';
     $('#file-list').querySelectorAll('[data-open-dir]').forEach((el) => {
       el.onclick = () => { activeDir = el.dataset.openDir; renderFileWorkspace(); };
       el.oncontextmenu = (event) => { event.preventDefault(); openDirectoryMenu(event.clientX, event.clientY, el.dataset.openDir); };
