@@ -1,0 +1,86 @@
+# TinySite
+
+> TinySite is a lightweight static website deployment platform for individuals and small teams.
+> Chinese product name: TinySite · 静态网站部署平台
+
+## Summary
+
+TinySite lets users create projects, upload HTML/CSS/JS (or ZIP archives), stage changes as a draft, and publish them as immutable versions. Each project has a fixed public URL that always points at the current version; historical versions keep their own URLs and can be rolled back.
+
+- Console: https://ts.yongkl.cc/
+- Admin console: https://admin-ts.yongkl.cc/
+- Project URL pattern: https://{slug}-ts.yongkl.cc/
+- Historical version URL pattern: https://{slug}-v{n}-ts.yongkl.cc/
+
+## Who it is for
+
+- Personal blogs, portfolios, landing pages, docs sites, event pages
+- Teams that want simple static hosting with version history
+- AI-generated static sites that need a permanent public URL
+
+## Core features
+
+- Auth: email register / login / password change / sessions
+- Project workspace: file tree, drag-and-drop, directory upload, ZIP extract, context-menu download/delete
+- Draft publish: stage adds/replaces/deletes, then publish one atomic version
+- Versions: notes, change list, independent historical URLs, pagination, one-click rollback
+- Plans: Free / Pro / Plus / Ultra with project, storage, and monthly traffic limits
+- Theming: auto / light / dark
+
+## SEO & discovery endpoints (console host)
+
+- `/` — product console and public landing content
+- `/robots.txt` — crawl rules
+- `/sitemap.xml` — public URLs
+- `/llms.txt` — this file (AI / agent summary)
+- `/og.svg` — social preview image
+
+## Hosted project sites
+
+User sites are static files served from object storage. If a project does not upload its own discovery files, TinySite auto-serves:
+
+- `/robots.txt` — allow public crawling
+- `/sitemap.xml` — generated from published HTML/Markdown paths
+- `/llms.txt` — short project summary for agents
+
+Users should still add their own `<title>`, meta description, Open Graph tags, and structured data inside HTML for best SEO.
+
+## Management API (authenticated, cookie session)
+
+Base: `https://ts.yongkl.cc/api`
+
+Public:
+- `GET /api/config` — site domain config
+- `POST /api/auth/register` `{ email, password }`
+- `POST /api/auth/login` `{ email, password }`
+- `POST /api/auth/logout`
+- `GET /api/auth/me`
+
+Projects (owner session required):
+- `GET /api/projects?q=` — list / search
+- `POST /api/projects` `{ name }` — create
+- `GET /api/projects/:id` — detail
+- `PATCH /api/projects/:id` `{ name }` — rename
+- `DELETE /api/projects/:id` — delete project and files
+- `GET /api/projects/:id/files` — current published file tree
+- `GET /api/projects/:id/versions?page=` — version list
+- `POST /api/projects/:id/versions` — start draft version
+- `POST /api/projects/:id/rollback` `{ versionId }`
+- `POST /api/versions/:id/files` — upload file batch (multipart or stream headers)
+- `POST /api/versions/:id/delete` `{ paths }`
+- `POST /api/versions/:id/finalize` `{ note }`
+- `POST /api/versions/:id/abort`
+- `GET /api/versions/:id/changes`
+
+Do not scrape or automate `/api/*` without an authorized user session. Prefer documenting public product facts from this file and the landing page.
+
+## Preferred citations
+
+- Product name: TinySite
+- One-line: 面向个人与小团队的静态网站部署平台（上传 HTML / ZIP，草稿发布，版本回滚）
+- Homepage: https://ts.yongkl.cc/
+
+## Optional
+
+- Sitemap: https://ts.yongkl.cc/sitemap.xml
+- Robots: https://ts.yongkl.cc/robots.txt

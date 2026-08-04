@@ -3,8 +3,90 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>TinySite · 静态网站部署平台</title>
+  <title>TinySite · 静态网站部署平台 | 上传发布 · 版本回滚 · 独立域名</title>
+  <meta name="description" content="TinySite 是面向个人与小团队的静态网站部署平台。拖拽上传 HTML/ZIP，草稿发布，一键回滚，固定域名始终指向当前版本。免费起步，适合博客、落地页与文档站。" />
+  <meta name="keywords" content="TinySite,静态网站,网站部署,静态托管,HTML 部署,版本回滚,个人博客,落地页,Cloudflare" />
+  <meta name="author" content="TinySite" />
+  <meta name="robots" content="index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1" />
+  <meta name="googlebot" content="index,follow" />
+  <meta name="bingbot" content="index,follow" />
+  <meta name="theme-color" content="#0b0d12" media="(prefers-color-scheme: dark)" />
+  <meta name="theme-color" content="#f6f7fb" media="(prefers-color-scheme: light)" />
+  <meta name="color-scheme" content="dark light" />
+  <meta name="application-name" content="TinySite" />
+  <meta name="format-detection" content="telephone=no" />
+
+  <link rel="canonical" href="https://ts.yongkl.cc/" />
+  <link rel="alternate" type="text/plain" title="llms.txt" href="/llms.txt" />
+  <link rel="sitemap" type="application/xml" title="Sitemap" href="/sitemap.xml" />
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="website" />
+  <meta property="og:locale" content="zh_CN" />
+  <meta property="og:site_name" content="TinySite" />
+  <meta property="og:url" content="https://ts.yongkl.cc/" />
+  <meta property="og:title" content="TinySite · 静态网站部署平台" />
+  <meta property="og:description" content="拖拽上传 HTML/ZIP，草稿发布，版本回滚。个人与小团队的轻量静态站托管平台。" />
+  <meta property="og:image" content="https://ts.yongkl.cc/og.svg" />
+  <meta property="og:image:type" content="image/svg+xml" />
+  <meta property="og:image:alt" content="TinySite 静态网站部署平台" />
+
+  <!-- Twitter / X -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="TinySite · 静态网站部署平台" />
+  <meta name="twitter:description" content="拖拽上传 HTML/ZIP，草稿发布，版本回滚。个人与小团队的轻量静态站托管平台。" />
+  <meta name="twitter:image" content="https://ts.yongkl.cc/og.svg" />
+
+  <!-- AI / agent discovery -->
+  <meta name="ai-content-declaration" content="This product page describes TinySite, a static website hosting platform. Machine-readable summary: /llms.txt" />
+
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚡</text></svg>" />
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "WebSite",
+        "@id": "https://ts.yongkl.cc/#website",
+        "url": "https://ts.yongkl.cc/",
+        "name": "TinySite",
+        "description": "面向个人与小团队的静态网站部署平台。上传 HTML、构建产物或 ZIP，草稿发布并支持版本回滚。",
+        "inLanguage": "zh-CN",
+        "publisher": { "@id": "https://ts.yongkl.cc/#app" }
+      },
+      {
+        "@type": "WebApplication",
+        "@id": "https://ts.yongkl.cc/#app",
+        "name": "TinySite",
+        "url": "https://ts.yongkl.cc/",
+        "applicationCategory": "DeveloperApplication",
+        "operatingSystem": "Web",
+        "browserRequirements": "Requires JavaScript",
+        "inLanguage": "zh-CN",
+        "description": "静态网站部署与版本管理平台：项目工作区、草稿发布、历史版本独立地址、套餐配额与运营后台。",
+        "featureList": [
+          "拖拽上传 HTML、目录与 ZIP",
+          "草稿发布与一键回滚",
+          "固定域名始终指向当前版本",
+          "历史版本独立可访问",
+          "项目/存储/流量套餐配额"
+        ],
+        "offers": {
+          "@type": "Offer",
+          "price": "0",
+          "priceCurrency": "CNY",
+          "description": "Free 套餐可免费注册使用"
+        }
+      },
+      {
+        "@type": "Organization",
+        "@id": "https://ts.yongkl.cc/#org",
+        "name": "TinySite",
+        "url": "https://ts.yongkl.cc/"
+      }
+    ]
+  }
+  </script>
   <script>
     (() => {
       const mode = localStorage.getItem('tinysite-theme') || 'auto';
@@ -12,7 +94,7 @@
       document.documentElement.dataset.theme = mode === 'light' || mode === 'dark' ? mode : (hour >= 7 && hour < 19 ? 'light' : 'dark');
     })();
   </script>
-  <link rel="stylesheet" href="/style.css?v=20260725-theme-audit" />
+  <link rel="stylesheet" href="/style.css?v=20260803-seo" />
 </head>
 <body>
   <header class="topbar">
@@ -28,7 +110,34 @@
     </div>
   </header>
 
-  <main id="app" class="wrap"></main>
+  <main id="app" class="wrap">
+    <!-- 爬虫与未执行 JS 时可见的落地内容；应用启动后会被 SPA 替换 -->
+    <article class="landing seo-fallback">
+      <header class="landing-hero">
+        <p class="landing-kicker">静态网站 · 一键上线</p>
+        <h1>TinySite · 静态网站部署平台</h1>
+        <p class="landing-lead">面向个人与小团队的轻量静态站托管：拖拽上传 HTML、构建产物或 ZIP，以草稿方式整理变更，确认后发布为可回滚版本。固定域名始终指向当前线上版本。</p>
+        <ul class="landing-points">
+          <li>拖拽上传文件、文件夹与 ZIP</li>
+          <li>草稿发布、版本备注与一键回滚</li>
+          <li>固定访问地址 + 历史版本独立链接</li>
+          <li>Free / Pro / Plus / Ultra 套餐配额</li>
+        </ul>
+      </header>
+      <section class="landing-features" aria-label="核心能力">
+        <h2>适合做什么</h2>
+        <p>个人博客、产品落地页、活动页、文档站、作品集与 AI 生成的静态页面，均可直接托管到独立子域名。</p>
+        <h2>如何开始</h2>
+        <ol>
+          <li>注册账号，获得 Free 套餐</li>
+          <li>创建项目，上传 <code>index.html</code> 或整个站点目录</li>
+          <li>发布版本，通过固定地址对外分享</li>
+        </ol>
+        <p>需要 AI / 自动化对接时，请阅读 <a href="/llms.txt">llms.txt</a> 与 <a href="/sitemap.xml">sitemap.xml</a>。</p>
+      </section>
+      <p class="landing-cta-note">请启用 JavaScript 以登录控制台并管理网站。</p>
+    </article>
+  </main>
 
   <div id="toast-root"></div>
   <div id="modal-root"></div>

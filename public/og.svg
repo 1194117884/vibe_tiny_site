@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-label="TinySite">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#14102a"/>
+      <stop offset="55%" stop-color="#0b0d12"/>
+      <stop offset="100%" stop-color="#12151d"/>
+    </linearGradient>
+    <linearGradient id="glow" x1="0.2" y1="0" x2="0.8" y2="1">
+      <stop offset="0%" stop-color="#9b87f5" stop-opacity="0.55"/>
+      <stop offset="100%" stop-color="#7259e8" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="mark" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#b8a8ff"/>
+      <stop offset="100%" stop-color="#7259e8"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <circle cx="980" cy="120" r="220" fill="url(#glow)"/>
+  <circle cx="180" cy="520" r="180" fill="url(#glow)" opacity="0.45"/>
+  <rect x="96" y="180" width="96" height="96" rx="28" fill="url(#mark)"/>
+  <text x="144" y="248" text-anchor="middle" font-size="54" font-family="Segoe UI, PingFang SC, sans-serif">⚡</text>
+  <text x="220" y="240" fill="#f3f5fa" font-size="72" font-weight="750" font-family="Segoe UI, PingFang SC, sans-serif" letter-spacing="-2">TinySite</text>
+  <text x="220" y="300" fill="#c4b5fd" font-size="34" font-family="Segoe UI, PingFang SC, sans-serif">静态网站部署平台</text>
+  <text x="96" y="400" fill="#d9ddeb" font-size="30" font-family="Segoe UI, PingFang SC, sans-serif">拖拽上传 · 草稿发布 · 版本回滚 · 固定域名</text>
+  <text x="96" y="460" fill="#929aae" font-size="24" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">ts.yongkl.cc</text>
+</svg>

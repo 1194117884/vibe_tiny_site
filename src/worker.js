@@ -27,6 +27,10 @@ import { unzipSync } from 'fflate';
  *
  *   GET    /api/config                    前端运行配置（站点域名后缀等）
  *
+ * SEO / AI 发现（控制台静态资源 + 托管站点自动生成）:
+ *   GET    /robots.txt /sitemap.xml /llms.txt
+ *   项目站未上传时，Worker 按线上文件树自动生成对应内容
+ *
  * 站点访问（兜底，路径模式，用于本地开发与 workers.dev）:
  *   GET    /s/:slug/*                     固定地址，始终指向当前发布版本
  *   GET    /v/:slug/:version/*            历史版本地址
@@ -192,9 +196,28 @@ function errorPage(status, title, desc) {
 }
 
 const DEFAULT_PAGES = {
-  'index.html': '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>网站已创建</title><body style="margin:0;display:grid;min-height:100vh;place-items:center;background:#f5f6f8;color:#17202a;font:16px -apple-system,BlinkMacSystemFont,\"PingFang SC\",sans-serif"><main style="max-width:560px;padding:40px;text-align:center"><h1>网站已创建</h1><p>上传 <code>index.html</code> 后，它将成为此域名的首页。其他 HTML 文件请通过文件名访问。</p></main></body></html>',
-  '404.html': '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>404 · 页面不存在</title><body style="margin:0;display:grid;min-height:100vh;place-items:center;background:#f5f6f8;color:#17202a;font:16px -apple-system,BlinkMacSystemFont,\"PingFang SC\",sans-serif"><main style="text-align:center"><h1>404</h1><p>页面不存在。</p></main></body></html>',
-  '50x.html': '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>服务器错误</title><body style="margin:0;display:grid;min-height:100vh;place-items:center;background:#f5f6f8;color:#17202a;font:16px -apple-system,BlinkMacSystemFont,\"PingFang SC\",sans-serif"><main style="text-align:center"><h1>服务器错误</h1><p>请稍后重试。</p></main></body></html>',
+  'index.html': `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>网站已创建 · TinySite</title>
+  <meta name="description" content="此站点已在 TinySite 创建。上传 index.html 后即可作为首页对外访问；请补充标题、描述与 Open Graph 标签以提升搜索与分享效果。">
+  <meta name="robots" content="index,follow">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="网站已创建 · TinySite">
+  <meta property="og:description" content="上传 index.html 后即可作为首页对外访问。">
+</head>
+<body style="margin:0;display:grid;min-height:100vh;place-items:center;background:#f5f6f8;color:#17202a;font:16px -apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif">
+  <main style="max-width:560px;padding:40px;text-align:center">
+    <h1>网站已创建</h1>
+    <p>上传 <code>index.html</code> 后，它将成为此域名的首页。其他 HTML 文件请通过文件名访问。</p>
+    <p style="color:#68737f;font-size:14px">建议在页面中设置 <code>&lt;title&gt;</code>、meta description 与 Open Graph，便于搜索引擎与 AI 抓取。</p>
+  </main>
+</body>
+</html>`,
+  '404.html': '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>404 · 页面不存在</title><meta name="robots" content="noindex"></head><body style="margin:0;display:grid;min-height:100vh;place-items:center;background:#f5f6f8;color:#17202a;font:16px -apple-system,BlinkMacSystemFont,\'PingFang SC\',sans-serif"><main style="text-align:center"><h1>404</h1><p>页面不存在。</p></main></body></html>',
+  '50x.html': '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>服务器错误</title><meta name="robots" content="noindex"></head><body style="margin:0;display:grid;min-height:100vh;place-items:center;background:#f5f6f8;color:#17202a;font:16px -apple-system,BlinkMacSystemFont,\'PingFang SC\',sans-serif"><main style="text-align:center"><h1>服务器错误</h1><p>请稍后重试。</p></main></body></html>',
 };
 
 async function createDefaultPages(env, projectId) {
@@ -1140,7 +1163,8 @@ async function serveSiteByHost(request, env, base, url) {
   const m = projectLabel.match(/^(.+?)-v(\d+)$/);
   const slug = m ? m[1] : projectLabel;
   const versionNum = m ? Number(m[2]) : null;
-  return serveProjectVersion(env, slug, versionNum, url.pathname.replace(/^\//, ''));
+  const siteOrigin = `${url.protocol}//${url.host}`;
+  return serveProjectVersion(env, slug, versionNum, url.pathname.replace(/^\//, ''), { siteOrigin, isCurrent: !m });
 }
 
 /**
@@ -1157,18 +1181,21 @@ async function serveSiteByPath(request, env, url) {
   if (!slug) return errorPage(404, '站点不存在', '请检查访问地址是否正确。');
   let versionNum = null;
   let rest;
+  let siteOrigin;
   if (seg[0] === 's') {
     rest = seg.slice(2).join('/');
+    siteOrigin = `${url.origin}/s/${encodeURIComponent(slug)}`;
   } else {
     versionNum = Number(seg[2]);
     if (!Number.isInteger(versionNum) || versionNum < 1) return errorPage(404, '版本不存在', '');
     rest = seg.slice(3).join('/');
+    siteOrigin = `${url.origin}/v/${encodeURIComponent(slug)}/${versionNum}`;
   }
-  return serveProjectVersion(env, slug, versionNum, rest);
+  return serveProjectVersion(env, slug, versionNum, rest, { siteOrigin, isCurrent: versionNum == null });
 }
 
 /** 解析项目与版本，然后输出文件 */
-async function serveProjectVersion(env, slug, versionNum, rest) {
+async function serveProjectVersion(env, slug, versionNum, rest, opts = {}) {
   const period = new Date().toISOString().slice(0, 7);
   let project = await env.DB.prepare(`SELECT p.*, u.id AS owner_id, u.status AS owner_status, u.plan_expires_at,
       pl.traffic_limit_bytes, COALESCE(mu.traffic_bytes, 0) AS traffic_bytes
@@ -1188,23 +1215,130 @@ async function serveProjectVersion(env, slug, versionNum, rest) {
     return errorPage(429, '本月流量已用完', '下个自然月额度会自动重置。');
   }
 
+  const discoveryMeta = {
+    name: project.name,
+    slug: project.slug,
+    siteOrigin: opts.siteOrigin || '',
+    isCurrent: opts.isCurrent !== false && versionNum == null,
+  };
+
   let v;
   if (versionNum == null) {
-    if (!project.current_version_id) return tagSiteResponse(await serveFiles(env, project.id, null, 0, rest), project.owner_id);
+    if (!project.current_version_id) {
+      return tagSiteResponse(await serveFiles(env, project.id, null, 0, rest, discoveryMeta), project.owner_id);
+    }
     v = await env.DB.prepare('SELECT id, version FROM versions WHERE id = ?').bind(project.current_version_id).first();
-    if (!v) return tagSiteResponse(await serveFiles(env, project.id, null, 0, rest), project.owner_id);
+    if (!v) return tagSiteResponse(await serveFiles(env, project.id, null, 0, rest, discoveryMeta), project.owner_id);
   } else {
     v = await env.DB.prepare("SELECT id, version FROM versions WHERE project_id = ? AND version = ? AND status = 'active'")
       .bind(project.id, versionNum).first();
     if (!v) return errorPage(404, '版本不存在', `该项目没有已发布的 v${versionNum} 版本。`);
   }
 
-  return tagSiteResponse(await serveFiles(env, project.id, v.id, v.version, rest), project.owner_id);
+  return tagSiteResponse(
+    await serveFiles(env, project.id, v.id, v.version, rest, discoveryMeta),
+    project.owner_id,
+  );
 }
 
 function tagSiteResponse(response, userId) {
   response.headers.set('x-tinysite-internal-user', userId);
   return response;
+}
+
+function textFile(body, type = 'text/plain; charset=utf-8', status = 200) {
+  return new Response(body, {
+    status,
+    headers: {
+      'Content-Type': type,
+      'Cache-Control': 'public, max-age=300',
+    },
+  });
+}
+
+/** 项目站点若未上传 robots/sitemap/llms，自动生成便于搜索引擎与 AI 发现 */
+async function serveProjectDiscovery(env, projectId, versionId, rel, meta = {}) {
+  const name = meta.name || 'Static site';
+  const origin = String(meta.siteOrigin || '').replace(/\/$/, '');
+  if (rel === 'robots.txt') {
+    const lines = [
+      'User-agent: *',
+      'Allow: /',
+      '',
+      'User-agent: GPTBot',
+      'Allow: /',
+      '',
+      'User-agent: ClaudeBot',
+      'Allow: /',
+      '',
+    ];
+    if (origin) lines.push(`Sitemap: ${origin}/sitemap.xml`, '');
+    return textFile(lines.join('\n'));
+  }
+  if (rel === 'llms.txt') {
+    return textFile([
+      `# ${name}`,
+      '',
+      '> Static website hosted on TinySite.',
+      '',
+      '## Summary',
+      '',
+      `${name} is a published static site. Prefer reading HTML pages, sitemap.xml, and this file for structure.`,
+      origin ? `Homepage: ${origin}/` : '',
+      origin ? `Sitemap: ${origin}/sitemap.xml` : '',
+      '',
+      '## Notes for agents',
+      '',
+      '- Content is static files (HTML/CSS/JS/images/Markdown).',
+      '- If pages lack metadata, use visible headings and first paragraphs as the description.',
+      '',
+    ].filter(Boolean).join('\n'));
+  }
+  if (rel === 'sitemap.xml') {
+    let paths = [];
+    if (meta.isCurrent !== false) {
+      const rows = await env.DB.prepare(
+        `SELECT path FROM project_files WHERE project_id = ?
+          AND (path LIKE '%.html' OR path LIKE '%.htm' OR path LIKE '%.md')
+          ORDER BY path LIMIT 5000`
+      ).bind(projectId).all();
+      paths = (rows.results || []).map((row) => row.path);
+    } else if (versionId) {
+      const rows = await env.DB.prepare(
+        `SELECT path FROM files WHERE version_id = ?
+          AND (path LIKE '%.html' OR path LIKE '%.htm' OR path LIKE '%.md')
+          ORDER BY path LIMIT 5000`
+      ).bind(versionId).all();
+      paths = (rows.results || []).map((row) => row.path);
+    }
+    if (!paths.length) paths = ['index.html'];
+    const urls = paths.map((path) => {
+      let locPath = String(path || '').replace(/\\/g, '/');
+      if (locPath.endsWith('/index.html')) locPath = locPath.slice(0, -'index.html'.length);
+      else if (locPath === 'index.html') locPath = '';
+      else if (locPath.endsWith('/index.htm')) locPath = locPath.slice(0, -'index.htm'.length);
+      else if (locPath === 'index.htm') locPath = '';
+      else if (locPath.endsWith('/index.md')) locPath = locPath.slice(0, -'index.md'.length);
+      else if (locPath === 'index.md') locPath = '';
+      const encoded = locPath.split('/').filter(Boolean).map(encodeURIComponent).join('/');
+      const loc = origin
+        ? (encoded ? `${origin}/${encoded}` : `${origin}/`)
+        : (encoded ? `/${encoded}` : '/');
+      return `  <url><loc>${escapeXml(loc)}</loc></url>`;
+    });
+    const body = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.join('\n')}\n</urlset>\n`;
+    return textFile(body, 'application/xml; charset=utf-8');
+  }
+  return null;
+}
+
+function escapeXml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
 }
 
 function usagePeriod() {
@@ -1219,10 +1353,16 @@ async function recordTraffic(env, userId, bytes) {
 }
 
 /** 从 R2 输出站点文件，含 SPA 回退与自定义 404 */
-async function serveFiles(env, projectId, versionId, versionNum, rest) {
+async function serveFiles(env, projectId, versionId, versionNum, rest, discoveryMeta = {}) {
   const defaultPrefix = `sites/${projectId}/defaults/`;
   const getVersionFile = async (path) => {
     if (!versionId) return null;
+    // 当前固定域名：读线上文件树；历史版本：读该版本快照
+    if (discoveryMeta.isCurrent !== false && versionNum == null) {
+      const live = await env.DB.prepare('SELECT r2_key FROM project_files WHERE project_id = ? AND path = ?')
+        .bind(projectId, path).first();
+      if (live) return env.BUCKET.get(live.r2_key);
+    }
     const file = await env.DB.prepare('SELECT r2_key FROM files WHERE version_id = ? AND path = ?')
       .bind(versionId, path).first();
     return file ? env.BUCKET.get(file.r2_key) : null;
@@ -1230,6 +1370,31 @@ async function serveFiles(env, projectId, versionId, versionNum, rest) {
   let rel = safePath(decodeURIComponent(rest || ''));
   const isDirectory = !rel || rel.endsWith('/');
   if (isDirectory) rel += 'index.html';
+
+  // SEO / AI 发现文件：用户上传优先，否则自动生成
+  if (['robots.txt', 'sitemap.xml', 'llms.txt'].includes(rel)) {
+    let obj = null;
+    if (discoveryMeta.isCurrent !== false) {
+      const live = await env.DB.prepare('SELECT r2_key FROM project_files WHERE project_id = ? AND path = ?')
+        .bind(projectId, rel).first();
+      if (live) obj = await env.BUCKET.get(live.r2_key);
+    }
+    if (!obj && versionId) {
+      const snap = await env.DB.prepare('SELECT r2_key FROM files WHERE version_id = ? AND path = ?')
+        .bind(versionId, rel).first();
+      if (snap) obj = await env.BUCKET.get(snap.r2_key);
+    }
+    if (obj) {
+      const headers = new Headers();
+      obj.writeHttpMetadata(headers);
+      if (!headers.has('Content-Type')) {
+        headers.set('Content-Type', rel.endsWith('.xml') ? 'application/xml; charset=utf-8' : 'text/plain; charset=utf-8');
+      }
+      headers.set('Cache-Control', 'public, max-age=300');
+      return new Response(obj.body, { headers });
+    }
+    return await serveProjectDiscovery(env, projectId, versionId, rel, discoveryMeta);
+  }
 
   let obj = await getVersionFile(rel);
   // Markdown 也可以作为独立站点的入口，适合直接分享 AI 生成的文档。

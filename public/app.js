@@ -221,22 +221,55 @@ const api = {
 };
 
 function renderAuth() {
-  app.innerHTML = `<section class="empty" style="max-width:440px;margin:70px auto;text-align:left">
-    <div class="empty-icon"><i data-lucide="zap"></i></div><h2 id="auth-title">登录 TinySite</h2><p id="auth-desc">使用账号管理你的静态网站。</p>
-    <form id="auth-form" style="display:grid;gap:12px;margin-top:24px">
-      <input name="email" type="email" placeholder="邮箱" required autocomplete="email" />
-      <input name="password" type="password" placeholder="密码（至少 8 位）" required minlength="8" autocomplete="current-password" />
-      <button class="btn" type="submit">登录</button>
-    </form>
-    <p style="margin-top:18px"><a href="#" id="auth-switch">没有账号？免费注册</a></p>
+  app.innerHTML = `<section class="landing" aria-label="TinySite 介绍与登录">
+    <div class="landing-main">
+      <header class="landing-hero">
+        <p class="landing-kicker"><i data-lucide="zap" aria-hidden="true"></i> 静态网站 · 一键上线</p>
+        <h1>TinySite · 静态网站部署平台</h1>
+        <p class="landing-lead">面向个人与小团队的轻量静态站托管。拖拽上传 HTML、构建产物或 ZIP，以草稿整理变更，确认后发布为可回滚版本；固定域名始终指向当前线上内容。</p>
+        <div class="landing-actions">
+          <a class="btn" href="#auth-card">免费注册 / 登录</a>
+          <a class="btn btn-ghost" href="/llms.txt" target="_blank" rel="noopener">AI 说明 llms.txt</a>
+        </div>
+      </header>
+      <section class="landing-features" aria-label="产品能力">
+        <article class="landing-card"><i data-lucide="upload" aria-hidden="true"></i><h2>拖拽即部署</h2><p>支持单文件、文件夹与 ZIP。在任意目录上传，右键下载或标记删除。</p></article>
+        <article class="landing-card"><i data-lucide="git-branch" aria-hidden="true"></i><h2>版本可回滚</h2><p>每次发布生成不可变版本，历史地址独立可访问，一键回滚到任意稳定版本。</p></article>
+        <article class="landing-card"><i data-lucide="globe" aria-hidden="true"></i><h2>固定访问地址</h2><p>项目拥有稳定子域名；搜索引擎可抓取页面，并自动提供 robots / sitemap / llms。</p></article>
+        <article class="landing-card"><i data-lucide="search" aria-hidden="true"></i><h2>SEO 与 AI 友好</h2><p>控制台可被检索；托管站点默认开放爬虫，并生成站点地图与 AI 摘要文件。</p></article>
+      </section>
+      <section class="landing-how" aria-label="使用步骤">
+        <h2>三步上线</h2>
+        <ol>
+          <li>注册账号，获得 Free 套餐额度</li>
+          <li>创建项目，上传 <code>index.html</code> 或整站目录</li>
+          <li>发布版本，通过固定地址对外分享</li>
+        </ol>
+        <p class="landing-seo-note">搜索与 AI 发现入口：<a href="/robots.txt">robots.txt</a> · <a href="/sitemap.xml">sitemap.xml</a> · <a href="/llms.txt">llms.txt</a></p>
+      </section>
+    </div>
+    <aside class="landing-auth card" id="auth-card">
+      <div class="empty-icon"><i data-lucide="zap" aria-hidden="true"></i></div>
+      <h2 id="auth-title">登录 TinySite</h2>
+      <p id="auth-desc">使用账号管理你的静态网站。</p>
+      <form id="auth-form">
+        <label class="sr-only" for="auth-email">邮箱</label>
+        <input id="auth-email" name="email" type="email" placeholder="邮箱" required autocomplete="email" />
+        <label class="sr-only" for="auth-password">密码</label>
+        <input id="auth-password" name="password" type="password" placeholder="密码（至少 8 位）" required minlength="8" autocomplete="current-password" />
+        <button class="btn" type="submit" id="auth-submit">登录</button>
+      </form>
+      <p class="auth-switch-row"><a href="#" id="auth-switch">没有账号？免费注册</a></p>
+    </aside>
   </section>`;
   let registerMode = false;
   const form = $('#auth-form');
   const update = () => {
     $('#auth-title').textContent = registerMode ? '注册 TinySite' : '登录 TinySite';
     $('#auth-desc').textContent = registerMode ? '注册后即获得 Free 套餐，可随时兑换赠送码或开通套餐。' : '使用账号管理你的静态网站。';
-    $('button', form).textContent = registerMode ? '注册并登录' : '登录';
+    $('#auth-submit').textContent = registerMode ? '注册并登录' : '登录';
     $('#auth-switch').textContent = registerMode ? '已有账号？去登录' : '没有账号？免费注册';
+    $('#auth-password').setAttribute('autocomplete', registerMode ? 'new-password' : 'current-password');
   };
   $('#auth-switch').onclick = (e) => { e.preventDefault(); registerMode = !registerMode; update(); };
   form.onsubmit = async (e) => {

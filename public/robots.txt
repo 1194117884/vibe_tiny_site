@@ -1,0 +1,46 @@
+# TinySite console — https://ts.yongkl.cc/
+User-agent: *
+Allow: /
+Allow: /llms.txt
+Allow: /sitemap.xml
+Allow: /og.svg
+Disallow: /api/
+Disallow: /s/
+Disallow: /v/
+
+# AI / training crawlers (explicit allow for product discovery)
+User-agent: GPTBot
+Allow: /
+Allow: /llms.txt
+Disallow: /api/
+
+User-agent: ChatGPT-User
+Allow: /
+Allow: /llms.txt
+Disallow: /api/
+
+User-agent: ClaudeBot
+Allow: /
+Allow: /llms.txt
+Disallow: /api/
+
+User-agent: Claude-Web
+Allow: /
+Allow: /llms.txt
+Disallow: /api/
+
+User-agent: Google-Extended
+Allow: /
+Allow: /llms.txt
+Disallow: /api/
+
+User-agent: Bytespider
+Allow: /
+Disallow: /api/
+
+User-agent: CCBot
+Allow: /
+Allow: /llms.txt
+Disallow: /api/
+
+Sitemap: https://ts.yongkl.cc/sitemap.xml
