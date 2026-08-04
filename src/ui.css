@@ -66,6 +66,15 @@
 .landing-auth input{width:100%;padding:10px 12px}
 .landing-auth .auth-switch-row{margin:14px 0 0;font-size:13px}
 .landing-auth .auth-switch-row a{color:#c4b5fd}
+.landing-auth .auth-desc{margin:0;color:var(--muted);font-size:13px;line-height:1.55}
+.google-auth-block{margin-top:18px}
+.google-btn-host{display:flex;justify-content:center;min-height:44px}
+.google-btn-host > div{width:100% !important}
+.google-auth-tip{margin:12px 0 0;color:var(--muted);font-size:12px;line-height:1.55;text-align:center}
+.google-auth-missing{margin-top:16px;padding:14px;border:1px dashed var(--line);border-radius:10px;color:var(--muted);font-size:13px;line-height:1.6}
+.google-auth-missing code{color:#cfc4ff;font-size:12px}
+.google-auth-missing p{margin:0}
+.google-auth-missing p+p{margin-top:8px}
 .landing-points{margin:14px 0 0;padding-left:18px;color:var(--muted);font-size:13px;line-height:1.7}
 .landing-cta-note{margin-top:18px;color:var(--muted);font-size:12px}
 .seo-fallback{padding:28px 0 48px}

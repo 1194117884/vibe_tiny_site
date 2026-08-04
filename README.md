@@ -6,7 +6,7 @@
 
 ## 能力概览
 
-- 账号体系：邮箱注册、登录、修改密码、会话管理与用户资源隔离。
+- 账号体系：仅 Google One Tap / 一键登录（无密码、无验证邮件、无找回密码）；会话管理与用户资源隔离。
 - 项目工作区：文件树、任意当前目录拖拽上传、目录上传、ZIP 解压、新建文件夹、右键下载/删除。
 - 草稿发布：将新增、替换、删除汇集为一组草稿操作，发布时原子生成新版本。
 - 版本管理：版本备注、改动明细、历史版本独立地址、分页与一键回滚。
@@ -63,6 +63,24 @@ wrangler.toml  Worker、数据库、对象存储与域名路由配置
 ```text
 sites/{projectId}/v{version}/{path}
 ```
+
+## Google 一键登录（唯一登录方式）
+
+TinySite **不使用邮箱密码**，也**不发送验证/找回邮件**。用户通过 Google One Tap 或「使用 Google 继续」完成注册与登录。
+
+1. 在 [Google Cloud Console](https://console.cloud.google.com/apis/credentials) 创建 **OAuth 2.0 客户端 ID**（类型：Web 应用）。
+2. **已获授权的 JavaScript 来源** 填入控制台域名，例如：
+   - `https://ts.yongkl.cc`
+   - `http://localhost:8787`（本地调试）
+3. 将 Client ID 写入 `wrangler.toml` 的 `[vars].GOOGLE_CLIENT_ID`。
+4. 应用迁移并部署：
+
+```bash
+wrangler d1 execute tinysite_db --remote --file=./migrations/0006_google_auth.sql
+npm run deploy
+```
+
+未配置 `GOOGLE_CLIENT_ID` 时登录入口不可用。邮箱密码注册/登录/改密接口已返回 410。
 
 ## 本地开发
 

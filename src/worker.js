@@ -13,6 +13,7 @@ import { unzipSync } from 'fflate';
  *   GET    /                              管理界面
  *
  * API（管理接口）:
+ *   POST   /api/auth/google               Google One Tap 登录  { credential }
  *   POST   /api/projects                  创建项目        { name }
  *   GET    /api/projects?q=               项目列表 / 按名称、slug 搜索
  *   GET    /api/projects/:id              项目详情
@@ -306,14 +307,81 @@ async function sha256(value) {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-async function passwordHash(password, salt) {
-  const material = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']);
-  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: new TextEncoder().encode(salt), iterations: 100000, hash: 'SHA-256' }, material, 256);
-  return [...new Uint8Array(bits)].map((b) => b.toString(16).padStart(2, '0')).join('');
+function publicUser(user) {
+  return {
+    id: user.id,
+    email: user.email,
+    role: user.role,
+    plan_id: user.plan_id,
+    plan_expires_at: user.plan_expires_at,
+    status: user.status,
+    has_password: Boolean(user.password_hash),
+    google_linked: Boolean(user.google_sub),
+  };
 }
 
-function publicUser(user) {
-  return { id: user.id, email: user.email, role: user.role, plan_id: user.plan_id, plan_expires_at: user.plan_expires_at, status: user.status };
+// ---------------- Google ID Token 校验（One Tap / GIS） ----------------
+
+let googleJwksCache = { keys: null, expiresAt: 0 };
+
+function base64UrlToBytes(input) {
+  const padded = input.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(input.length / 4) * 4, '=');
+  const binary = atob(padded);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+async function getGoogleJwks() {
+  if (googleJwksCache.keys && googleJwksCache.expiresAt > Date.now()) return googleJwksCache.keys;
+  const res = await fetch('https://www.googleapis.com/oauth2/v3/certs');
+  if (!res.ok) throw new Error('无法获取 Google 公钥');
+  const data = await res.json();
+  googleJwksCache = { keys: data.keys || [], expiresAt: Date.now() + 60 * 60 * 1000 };
+  return googleJwksCache.keys;
+}
+
+async function verifyGoogleIdToken(credential, clientId) {
+  if (!credential || typeof credential !== 'string' || credential.split('.').length !== 3) {
+    throw new Error('无效的 Google 凭证');
+  }
+  const [headerB64, payloadB64, sigB64] = credential.split('.');
+  const header = JSON.parse(new TextDecoder().decode(base64UrlToBytes(headerB64)));
+  const payload = JSON.parse(new TextDecoder().decode(base64UrlToBytes(payloadB64)));
+  if (header.alg !== 'RS256') throw new Error('不支持的 Google 凭证算法');
+
+  const keys = await getGoogleJwks();
+  const jwk = keys.find((key) => key.kid === header.kid);
+  if (!jwk) throw new Error('Google 凭证签名密钥无效');
+
+  const cryptoKey = await crypto.subtle.importKey(
+    'jwk',
+    jwk,
+    { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
+    false,
+    ['verify'],
+  );
+  const ok = await crypto.subtle.verify(
+    'RSASSA-PKCS1-v1_5',
+    cryptoKey,
+    base64UrlToBytes(sigB64),
+    new TextEncoder().encode(`${headerB64}.${payloadB64}`),
+  );
+  if (!ok) throw new Error('Google 凭证签名校验失败');
+
+  const audiences = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
+  if (!audiences.includes(clientId)) throw new Error('Google 凭证受众不匹配');
+  if (!['accounts.google.com', 'https://accounts.google.com'].includes(payload.iss)) {
+    throw new Error('Google 凭证签发方无效');
+  }
+  if (!payload.exp || payload.exp * 1000 < Date.now() - 30_000) throw new Error('Google 凭证已过期');
+  if (payload.email_verified !== true && payload.email_verified !== 'true') {
+    throw new Error('Google 邮箱尚未验证');
+  }
+  const email = String(payload.email || '').trim().toLowerCase();
+  const sub = String(payload.sub || '').trim();
+  if (!email || !sub) throw new Error('Google 凭证缺少邮箱信息');
+  return { email, sub, name: payload.name || '' };
 }
 
 async function currentUser(request, env) {
@@ -367,37 +435,58 @@ async function createSession(env, userId) {
   return id;
 }
 
-async function register(request, env) {
-  const body = await request.json().catch(() => ({}));
-  const email = String(body.email || '').trim().toLowerCase();
-  const password = String(body.password || '');
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return json({ error: '请输入有效邮箱' }, 400);
-  if (password.length < 8 || password.length > 128) return json({ error: '密码长度应为 8–128 个字符' }, 400);
-  const now = Date.now();
-  const existing = await env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(email).first();
-  if (existing) return json({ error: '该邮箱已注册，请直接登录' }, 409);
-  const id = uid('u_');
-  const salt = randomToken();
-  const hash = await passwordHash(password, salt);
-  await env.DB.prepare(`INSERT INTO users (id, email, password_hash, password_salt, role, plan_id, status, created_at)
-    VALUES (?, ?, ?, ?, 'user', 'free', 'active', ?)`).bind(id, email, hash, salt, now).run();
-  const user = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(id).first();
-  const sessionId = await createSession(env, id);
-  const response = json({ user: publicUser(user) }, 201);
-  response.headers.set('Set-Cookie', sessionCookie(sessionId));
-  return response;
+/** 邮箱密码注册已停用：仅支持 Google 一键登录，避免密码与邮件验证。 */
+async function register() {
+  return json({ error: '已停用邮箱注册。请使用 Google 一键登录，无需密码与验证邮件。' }, 410);
 }
 
-async function login(request, env) {
+/** 邮箱密码登录已停用：仅支持 Google 一键登录。 */
+async function login() {
+  return json({ error: '已停用邮箱密码登录。请使用 Google 一键登录，无需找回密码。' }, 410);
+}
+
+/** POST /api/auth/google  校验 Google One Tap / 按钮返回的 ID Token，登录或自动注册。 */
+async function googleLogin(request, env) {
+  const clientId = String(env.GOOGLE_CLIENT_ID || '').trim();
+  if (!clientId) return json({ error: '尚未配置 Google 登录' }, 503);
+
   const body = await request.json().catch(() => ({}));
-  const email = String(body.email || '').trim().toLowerCase();
-  const password = String(body.password || '');
-  const user = await env.DB.prepare('SELECT * FROM users WHERE email = ?').bind(email).first();
-  if (!user || await passwordHash(password, user.password_salt) !== user.password_hash) return json({ error: '邮箱或密码错误' }, 401);
+  const credential = String(body.credential || '').trim();
+  if (!credential) return json({ error: '缺少 Google 登录凭证' }, 400);
+
+  let identity;
+  try {
+    identity = await verifyGoogleIdToken(credential, clientId);
+  } catch (err) {
+    return json({ error: err.message || 'Google 登录校验失败' }, 401);
+  }
+
+  const now = Date.now();
+  let user = await env.DB.prepare('SELECT * FROM users WHERE google_sub = ?').bind(identity.sub).first();
+  if (!user) {
+    user = await env.DB.prepare('SELECT * FROM users WHERE email = ?').bind(identity.email).first();
+    if (user) {
+      if (user.google_sub && user.google_sub !== identity.sub) {
+        return json({ error: '该邮箱已绑定其他 Google 账号' }, 409);
+      }
+      await env.DB.prepare('UPDATE users SET google_sub = ? WHERE id = ? AND (google_sub IS NULL OR google_sub = ?)')
+        .bind(identity.sub, user.id, identity.sub).run();
+      user = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(user.id).first();
+    } else {
+      const id = uid('u_');
+      // Google 账号无本地密码：空 hash/salt，只能走 Google 登录
+      await env.DB.prepare(`INSERT INTO users (id, email, password_hash, password_salt, role, plan_id, status, created_at, google_sub)
+        VALUES (?, ?, '', '', 'user', 'free', 'active', ?, ?)`).bind(id, identity.email, now, identity.sub).run();
+      user = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(id).first();
+      await audit(env, request, 'auth.google.register', 'user', id, { email: identity.email });
+    }
+  }
+
   if (user.status !== 'active') return json({ error: '账号已暂停，请联系管理员' }, 403);
   await refreshEntitlementSchedule(env, user.id);
   const effectiveUser = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(user.id).first();
   const sessionId = await createSession(env, user.id);
+  await audit(env, request, 'auth.google.login', 'user', user.id, { email: user.email });
   const response = json({ user: publicUser(effectiveUser) });
   response.headers.set('Set-Cookie', sessionCookie(sessionId));
   return response;
@@ -411,29 +500,9 @@ async function logout(request, env) {
   return response;
 }
 
-/** POST /api/account/password  验证旧密码后更新，并撤销其他设备会话。 */
-async function changePassword(request, env) {
-  const body = await request.json().catch(() => ({}));
-  const currentPassword = String(body.currentPassword || '');
-  const newPassword = String(body.newPassword || '');
-  if (newPassword.length < 8) return json({ error: '新密码至少需要 8 位' }, 400);
-  const userId = request.headers.get('x-tinysite-user-id');
-  const user = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(userId).first();
-  if (!user || await passwordHash(currentPassword, user.password_salt) !== user.password_hash) {
-    return json({ error: '当前密码不正确' }, 401);
-  }
-  if (currentPassword === newPassword) return json({ error: '新密码不能与当前密码相同' }, 400);
-  const salt = randomToken();
-  const hash = await passwordHash(newPassword, salt);
-  await audit(env, request, 'password.change', 'user', user.id);
-  await env.DB.batch([
-    env.DB.prepare('UPDATE users SET password_hash = ?, password_salt = ? WHERE id = ?').bind(hash, salt, user.id),
-    env.DB.prepare('DELETE FROM sessions WHERE user_id = ?').bind(user.id),
-  ]);
-  const sessionId = await createSession(env, user.id);
-  const response = json({ ok: true });
-  response.headers.set('Set-Cookie', sessionCookie(sessionId));
-  return response;
+/** POST /api/account/password  已停用：Google 一键登录不使用本地密码。 */
+async function changePassword() {
+  return json({ error: '已停用密码设置。请始终使用 Google 一键登录，无需密码与邮件找回。' }, 410);
 }
 
 async function requireOwnedResource(env, user, pathname) {
@@ -1444,13 +1513,19 @@ async function serveFiles(env, projectId, versionId, versionNum, rest, discovery
 async function getConfig(request, env) {
   const base = (env.SITE_BASE_DOMAIN || '').trim();
   const suffix = (env.SITE_HOST_SUFFIX || '').trim();
-  return json({ siteBase: base || null, siteSuffix: suffix || '' });
+  const googleClientId = String(env.GOOGLE_CLIENT_ID || '').trim();
+  return json({
+    siteBase: base || null,
+    siteSuffix: suffix || '',
+    googleClientId: googleClientId || null,
+  });
 }
 
 const apiRoutes = [
   ['GET', '/api/config', getConfig],
   ['POST', '/api/auth/register', register],
   ['POST', '/api/auth/login', login],
+  ['POST', '/api/auth/google', googleLogin],
   ['POST', '/api/auth/logout', logout],
   ['GET', '/api/auth/me', async (request, env) => {
     const user = await currentUser(request, env);

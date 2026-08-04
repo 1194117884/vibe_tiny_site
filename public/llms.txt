@@ -50,11 +50,11 @@ Users should still add their own `<title>`, meta description, Open Graph tags, a
 Base: `https://ts.yongkl.cc/api`
 
 Public:
-- `GET /api/config` — site domain config
-- `POST /api/auth/register` `{ email, password }`
-- `POST /api/auth/login` `{ email, password }`
+- `GET /api/config` — site domain config + `googleClientId` (required for login)
+- `POST /api/auth/google` `{ credential }` — Google One Tap / GIS ID token (only login path; auto-registers)
 - `POST /api/auth/logout`
 - `GET /api/auth/me`
+- Password/email auth and password reset are disabled (410). No verification emails are sent.
 
 Projects (owner session required):
 - `GET /api/projects?q=` — list / search

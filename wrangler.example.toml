@@ -27,3 +27,5 @@ bucket_name = "tinysite-sites"
 [vars]
 SITE_BASE_DOMAIN = "example.com"
 SITE_HOST_SUFFIX = "-site"
+# Google Identity Services (One Tap) Web Client ID. Leave empty to hide Google login.
+GOOGLE_CLIENT_ID = ""

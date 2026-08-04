@@ -81,7 +81,8 @@ CREATE TABLE IF NOT EXISTS users (
   role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'admin')),
   plan_id TEXT NOT NULL DEFAULT 'free' REFERENCES plans(id), plan_expires_at INTEGER,
   status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'suspended')),
-  activation_code_id TEXT REFERENCES activation_codes(id), created_at INTEGER NOT NULL
+  activation_code_id TEXT REFERENCES activation_codes(id), created_at INTEGER NOT NULL,
+  google_sub TEXT UNIQUE
 );
 CREATE TABLE IF NOT EXISTS sessions (
   id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

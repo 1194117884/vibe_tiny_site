@@ -80,7 +80,9 @@ function debounce(fn, ms) {
 // 站点访问地址:配置了域名后缀及项目标识(如 -ts.yongkl.cc)时用域名模式,否则退化为路径模式
 let SITE_BASE = null;
 let SITE_SUFFIX = '';
+let GOOGLE_CLIENT_ID = null;
 let CURRENT_USER = null;
+let googleScriptPromise = null;
 const siteUrl = (slug) =>
   SITE_BASE ? `https://${slug}${SITE_SUFFIX}.${SITE_BASE}/` : `${location.origin}/s/${slug}/`;
 const versionUrl = (slug, v) =>
@@ -185,13 +187,11 @@ async function req(path, opts = {}) {
 
 const api = {
   me: () => req('/api/auth/me'),
-  login: (email, password) => req('/api/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }),
-  register: (email, password) => req('/api/auth/register', { method: 'POST', body: JSON.stringify({ email, password }) }),
+  googleLogin: (credential) => req('/api/auth/google', { method: 'POST', body: JSON.stringify({ credential }) }),
   logout: () => req('/api/auth/logout', { method: 'POST' }),
   accountUsage: () => req('/api/account/usage'),
   selectPlan: (planId) => req('/api/account/plan', { method: 'POST', body: JSON.stringify({ planId }) }),
   redeemCode: (code) => req('/api/account/redeem-code', { method: 'POST', body: JSON.stringify({ code }) }),
-  changePassword: (currentPassword, newPassword) => req('/api/account/password', { method: 'POST', body: JSON.stringify({ currentPassword, newPassword }) }),
   adminOverview: () => req('/api/admin/overview'),
   adminUsers: () => req('/api/admin/users'),
   grantEntitlement: (id, planId, durationDays) => req(`/api/admin/users/${id}/entitlements`, { method: 'POST', body: JSON.stringify({ planId, durationDays }) }),
@@ -220,7 +220,86 @@ const api = {
   deleteDraftFiles: (vid, paths) => req(`/api/versions/${vid}/delete`, { method: 'POST', body: JSON.stringify({ paths }) }),
 };
 
+function loadGoogleIdentityScript() {
+  if (window.google?.accounts?.id) return Promise.resolve();
+  if (googleScriptPromise) return googleScriptPromise;
+  googleScriptPromise = new Promise((resolve, reject) => {
+    const existing = document.querySelector('script[data-google-gsi]');
+    if (existing) {
+      existing.addEventListener('load', () => resolve());
+      existing.addEventListener('error', () => reject(new Error('Google 登录脚本加载失败')));
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = 'https://accounts.google.com/gsi/client';
+    script.async = true;
+    script.defer = true;
+    script.dataset.googleGsi = '1';
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error('Google 登录脚本加载失败'));
+    document.head.appendChild(script);
+  });
+  return googleScriptPromise;
+}
+
+async function completeGoogleSignIn(credential) {
+  const result = await api.googleLogin(credential);
+  CURRENT_USER = result.user;
+  updateAccountBar();
+  toast('已通过 Google 登录');
+  route();
+}
+
+async function setupGoogleSignIn(mountEl) {
+  if (!GOOGLE_CLIENT_ID || !mountEl) return;
+  try {
+    await loadGoogleIdentityScript();
+    if (!window.google?.accounts?.id) return;
+
+    const onCredential = async (response) => {
+      if (!response?.credential) return;
+      try {
+        await completeGoogleSignIn(response.credential);
+      } catch (err) {
+        toast(err.message || 'Google 登录失败', 'error');
+      }
+    };
+
+    window.google.accounts.id.initialize({
+      client_id: GOOGLE_CLIENT_ID,
+      callback: onCredential,
+      auto_select: true,
+      cancel_on_tap_outside: true,
+      context: 'signin',
+      itp_support: true,
+      use_fedcm_for_prompt: true,
+    });
+
+    const buttonHost = mountEl.querySelector('#google-btn');
+    if (buttonHost) {
+      buttonHost.innerHTML = '';
+      window.google.accounts.id.renderButton(buttonHost, {
+        type: 'standard',
+        theme: document.documentElement.dataset.theme === 'light' ? 'outline' : 'filled_black',
+        size: 'large',
+        text: 'continue_with',
+        shape: 'rectangular',
+        logo_alignment: 'left',
+        width: 280,
+      });
+    }
+
+    // One Tap：浏览器已登录 Google 时直接点选，无需密码、无需邮件
+    try { window.google.accounts.id.prompt(); } catch {}
+  } catch (err) {
+    console.warn(err);
+    const tip = mountEl.querySelector('#google-auth-tip');
+    if (tip) tip.textContent = 'Google 登录加载失败，请刷新页面重试。';
+  }
+}
+
 function renderAuth() {
+  const googleEnabled = Boolean(GOOGLE_CLIENT_ID);
   app.innerHTML = `<section class="landing" aria-label="TinySite 介绍与登录">
     <div class="landing-main">
       <header class="landing-hero">
@@ -228,7 +307,7 @@ function renderAuth() {
         <h1>TinySite · 静态网站部署平台</h1>
         <p class="landing-lead">面向个人与小团队的轻量静态站托管。拖拽上传 HTML、构建产物或 ZIP，以草稿整理变更，确认后发布为可回滚版本；固定域名始终指向当前线上内容。</p>
         <div class="landing-actions">
-          <a class="btn" href="#auth-card">免费注册 / 登录</a>
+          <a class="btn" href="#auth-card">Google 一键登录</a>
           <a class="btn btn-ghost" href="/llms.txt" target="_blank" rel="noopener">AI 说明 llms.txt</a>
         </div>
       </header>
@@ -241,7 +320,7 @@ function renderAuth() {
       <section class="landing-how" aria-label="使用步骤">
         <h2>三步上线</h2>
         <ol>
-          <li>注册账号，获得 Free 套餐额度</li>
+          <li>用 Google 一键登录（无需密码、无需邮件验证）</li>
           <li>创建项目，上传 <code>index.html</code> 或整站目录</li>
           <li>发布版本，通过固定地址对外分享</li>
         </ol>
@@ -250,40 +329,18 @@ function renderAuth() {
     </div>
     <aside class="landing-auth card" id="auth-card">
       <div class="empty-icon"><i data-lucide="zap" aria-hidden="true"></i></div>
-      <h2 id="auth-title">登录 TinySite</h2>
-      <p id="auth-desc">使用账号管理你的静态网站。</p>
-      <form id="auth-form">
-        <label class="sr-only" for="auth-email">邮箱</label>
-        <input id="auth-email" name="email" type="email" placeholder="邮箱" required autocomplete="email" />
-        <label class="sr-only" for="auth-password">密码</label>
-        <input id="auth-password" name="password" type="password" placeholder="密码（至少 8 位）" required minlength="8" autocomplete="current-password" />
-        <button class="btn" type="submit" id="auth-submit">登录</button>
-      </form>
-      <p class="auth-switch-row"><a href="#" id="auth-switch">没有账号？免费注册</a></p>
+      <h2>Google 一键登录</h2>
+      <p class="auth-desc">使用 Google 账号进入 TinySite。无需设置密码，也不会发送验证邮件。</p>
+      ${googleEnabled ? `<div class="google-auth-block" id="google-auth-block">
+        <div id="google-btn" class="google-btn-host" role="group" aria-label="使用 Google 继续"></div>
+        <p class="google-auth-tip" id="google-auth-tip">已登录 Google 时会弹出 One Tap，点一下即可进入。首次登录自动开通 Free 套餐。</p>
+      </div>` : `<div class="google-auth-missing">
+        <p>尚未配置 <code>GOOGLE_CLIENT_ID</code>，无法显示 Google 登录。</p>
+        <p class="page-sub">请在 Google Cloud 创建 Web 客户端 ID，写入 wrangler.toml 的 [vars] 后重新部署。</p>
+      </div>`}
     </aside>
   </section>`;
-  let registerMode = false;
-  const form = $('#auth-form');
-  const update = () => {
-    $('#auth-title').textContent = registerMode ? '注册 TinySite' : '登录 TinySite';
-    $('#auth-desc').textContent = registerMode ? '注册后即获得 Free 套餐，可随时兑换赠送码或开通套餐。' : '使用账号管理你的静态网站。';
-    $('#auth-submit').textContent = registerMode ? '注册并登录' : '登录';
-    $('#auth-switch').textContent = registerMode ? '已有账号？去登录' : '没有账号？免费注册';
-    $('#auth-password').setAttribute('autocomplete', registerMode ? 'new-password' : 'current-password');
-  };
-  $('#auth-switch').onclick = (e) => { e.preventDefault(); registerMode = !registerMode; update(); };
-  form.onsubmit = async (e) => {
-    e.preventDefault();
-    const data = new FormData(form);
-    try {
-      const result = registerMode
-        ? await api.register(data.get('email'), data.get('password'))
-        : await api.login(data.get('email'), data.get('password'));
-      CURRENT_USER = result.user;
-      updateAccountBar();
-      route();
-    } catch (err) { toast(err.message, 'error'); }
-  };
+  if (googleEnabled) setupGoogleSignIn($('#google-auth-block'));
 }
 
 async function renderAdmin() {
@@ -381,30 +438,14 @@ function updateAccountBar() {
   const slot = document.getElementById('account-slot');
   if (!slot) return;
   if (!CURRENT_USER) { slot.textContent = ''; return; }
-  slot.innerHTML = `<span>${esc(CURRENT_USER.email)} · ${esc(CURRENT_USER.plan_id)}</span><button class="btn btn-ghost" id="password-btn">修改密码</button><button class="btn btn-ghost" id="logout-btn">退出</button>`;
-  $('#password-btn').onclick = showPasswordDialog;
-  $('#logout-btn').onclick = async () => { await api.logout(); CURRENT_USER = null; location.hash = '#/'; updateAccountBar(); renderAuth(); };
-}
-
-function showPasswordDialog() {
-  const root = document.getElementById('modal-root');
-  root.innerHTML = `<div class="dialog-overlay" role="presentation"><form class="dialog-panel" id="password-form" role="dialog" aria-modal="true" aria-labelledby="password-title">
-    <h3 id="password-title">修改密码</h3><p class="dialog-desc">修改后，其他已登录设备会自动退出。</p>
-    <div class="password-fields"><input name="current" type="password" placeholder="当前密码" autocomplete="current-password" required/><input name="next" type="password" placeholder="新密码（至少 8 位）" autocomplete="new-password" minlength="8" required/><input name="confirm" type="password" placeholder="确认新密码" autocomplete="new-password" minlength="8" required/></div>
-    <div class="dialog-actions"><button type="button" class="btn btn-ghost" data-close-password>取消</button><button type="submit" class="btn">保存新密码</button></div>
-  </form></div>`;
-  const overlay = root.firstElementChild;
-  const close = () => overlay.remove();
-  $('[data-close-password]', overlay).onclick = close;
-  overlay.onclick = (e) => { if (e.target === overlay) close(); };
-  const form = $('#password-form', overlay);
-  $('input', form).focus();
-  form.onsubmit = async (e) => {
-    e.preventDefault();
-    const values = new FormData(form);
-    if (values.get('next') !== values.get('confirm')) return toast('两次输入的新密码不一致', 'error');
-    try { await api.changePassword(values.get('current'), values.get('next')); close(); toast('密码已更新，其他设备已退出'); }
-    catch (err) { toast(err.message, 'error'); }
+  slot.innerHTML = `<span>${esc(CURRENT_USER.email)} · ${esc(CURRENT_USER.plan_id)}</span><button class="btn btn-ghost" id="logout-btn">退出</button>`;
+  $('#logout-btn').onclick = async () => {
+    try { window.google?.accounts?.id?.disableAutoSelect?.(); } catch {}
+    await api.logout();
+    CURRENT_USER = null;
+    location.hash = '#/';
+    updateAccountBar();
+    renderAuth();
   };
 }
 
@@ -1087,10 +1128,14 @@ function route() {
 
 window.addEventListener('hashchange', route);
 
-// 先拉取运行配置（站点域名后缀）,再进入路由渲染
+// 先拉取运行配置（站点域名后缀 / Google Client ID）,再进入路由渲染
 fetch('/api/config')
   .then((r) => r.json())
-  .then((cfg) => { SITE_BASE = cfg.siteBase || null; SITE_SUFFIX = cfg.siteSuffix || ''; })
+  .then((cfg) => {
+    SITE_BASE = cfg.siteBase || null;
+    SITE_SUFFIX = cfg.siteSuffix || '';
+    GOOGLE_CLIENT_ID = cfg.googleClientId || null;
+  })
   .catch(() => {})
   .then(async () => {
     try { CURRENT_USER = (await api.me()).user; } catch { CURRENT_USER = null; }
