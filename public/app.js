@@ -416,7 +416,7 @@ function showAdminProjectDetail(data) {
       <h4>版本记录</h4>
       <div class="admin-detail-table"><table><thead><tr><th>版本</th><th>状态</th><th>文件</th><th>大小</th><th>创建时间</th></tr></thead><tbody>${versions.map((v) => `<tr><td>v${v.version}</td><td>${esc(v.status)}</td><td>${v.file_count || 0}</td><td>${fmtBytes(v.total_size)}</td><td>${fmtTime(v.created_at)}</td></tr>`).join('') || '<tr><td colspan="5">暂无版本</td></tr>'}</tbody></table></div>
       <h4>当前线上文件 <small>(${files.length})</small></h4>
-      <div class="admin-file-list">${files.map((file) => `<div><code>${esc(file.path)}</code><span>${fmtBytes(file.size)} · ${esc(file.mime || '-')}</span></div>`).join('') || '<p class="page-sub">当前没有已发布文件。</p>'}</div>
+      <div class="admin-file-list">${files.map((file) => `<a class="admin-file-link" href="${esc(fileUrl(project.slug, file.path))}" target="_blank" rel="noopener noreferrer" title="在新标签页打开"><code>${esc(file.path)}</code><span>${fmtBytes(file.size)} · ${esc(file.mime || '-')}</span></a>`).join('') || '<p class="page-sub">当前没有已发布文件。</p>'}</div>
     </div>
   </div>`;
   const overlay = root.firstElementChild;
