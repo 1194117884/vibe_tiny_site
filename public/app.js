@@ -305,46 +305,73 @@ async function setupGoogleSignIn(mountEl) {
 
 function renderAuth() {
   const googleEnabled = Boolean(GOOGLE_CLIENT_ID);
-  app.innerHTML = `<section class="landing" aria-label="TinySite 介绍与登录">
-    <div class="landing-main">
-      <header class="landing-hero">
-        <p class="landing-kicker"><i data-lucide="zap" aria-hidden="true"></i> 静态网站 · 一键上线</p>
-        <h1>TinySite · 静态网站部署平台</h1>
-        <p class="landing-lead">面向个人与小团队的轻量静态站托管。拖拽上传 HTML、构建产物或 ZIP，以草稿整理变更，确认后发布为可回滚版本；固定域名始终指向当前线上内容。</p>
-        <div class="landing-actions">
-          <a class="btn" href="#auth-card">Google 一键登录</a>
-          <a class="btn btn-ghost" href="/llms.txt" target="_blank" rel="noopener">AI 说明 llms.txt</a>
-        </div>
-      </header>
-      <section class="landing-features" aria-label="产品能力">
-        <article class="landing-card"><i data-lucide="upload" aria-hidden="true"></i><h2>拖拽即部署</h2><p>支持单文件、文件夹与 ZIP。在任意目录上传，右键下载或标记删除。</p></article>
-        <article class="landing-card"><i data-lucide="git-branch" aria-hidden="true"></i><h2>版本可回滚</h2><p>每次发布生成不可变版本，历史地址独立可访问，一键回滚到任意稳定版本。</p></article>
-        <article class="landing-card"><i data-lucide="globe" aria-hidden="true"></i><h2>固定访问地址</h2><p>项目拥有稳定子域名；搜索引擎可抓取页面，并自动提供 robots / sitemap / llms。</p></article>
-        <article class="landing-card"><i data-lucide="search" aria-hidden="true"></i><h2>SEO 与 AI 友好</h2><p>控制台可被检索；托管站点默认开放爬虫，并生成站点地图与 AI 摘要文件。</p></article>
-      </section>
-      <section class="landing-how" aria-label="使用步骤">
-        <h2>三步上线</h2>
-        <ol>
-          <li>用 Google 一键登录（无需密码、无需邮件验证）</li>
-          <li>创建项目，上传 <code>index.html</code> 或整站目录</li>
-          <li>发布版本，通过固定地址对外分享</li>
-        </ol>
-        <p class="landing-seo-note">搜索与 AI 发现入口：<a href="/robots.txt">robots.txt</a> · <a href="/sitemap.xml">sitemap.xml</a> · <a href="/llms.txt">llms.txt</a></p>
-      </section>
-    </div>
-    <aside class="landing-auth card" id="auth-card">
-      <div class="empty-icon"><i data-lucide="zap" aria-hidden="true"></i></div>
-      <h2>Google 一键登录</h2>
-      <p class="auth-desc">使用 Google 账号进入 TinySite。无需设置密码，也不会发送验证邮件。</p>
+  app.innerHTML = `<div class="marketing-home" aria-label="TinySite 官网">
+    <section class="marketing-hero">
+      <div class="marketing-hero-copy">
+        <p class="marketing-pill"><span></span>为静态网站而生 · 免费起步</p>
+        <h1>上传网站，<span>几分钟上线。</span></h1>
+        <p class="marketing-lead">不用服务器，不用命令行。把 HTML、构建产物或 ZIP 拖进 TinySite，确认后立即发布；每次上线都有版本，改坏了随时回滚。</p>
+        <div class="marketing-actions"><a class="btn marketing-primary" href="#auth-card"><i data-lucide="rocket"></i>免费发布第一个网站</a><a class="marketing-text-link" href="#workflow">看看怎么用 <i data-lucide="arrow-down"></i></a></div>
+        <div class="marketing-proof"><span><i data-lucide="circle-check"></i>Google 一键登录</span><span><i data-lucide="circle-check"></i>Free 可发布 1 个项目</span><span><i data-lucide="circle-check"></i>版本可随时回滚</span></div>
+      </div>
+      <aside class="landing-auth marketing-auth" id="auth-card">
+        <div class="auth-glow"></div><div class="auth-icon"><i data-lucide="zap"></i></div>
+        <span class="auth-eyebrow">START SHIPPING</span><h2>今天就把网站发出去</h2>
+        <p class="auth-desc">首次登录自动开通 Free 套餐。创建项目、上传文件、点击发布，就这么简单。</p>
       ${googleEnabled ? `<div class="google-auth-block" id="google-auth-block">
         <div id="google-btn" class="google-btn-host" role="group" aria-label="使用 Google 继续"></div>
-        <p class="google-auth-tip" id="google-auth-tip">已登录 Google 时会弹出 One Tap，点一下即可进入。首次登录自动开通 Free 套餐。</p>
+        <p class="google-auth-tip" id="google-auth-tip">使用 Google 账号安全进入 TinySite。</p>
       </div>` : `<div class="google-auth-missing">
         <p>尚未配置 <code>GOOGLE_CLIENT_ID</code>，无法显示 Google 登录。</p>
         <p class="page-sub">请在 Google Cloud 创建 Web 客户端 ID，写入 wrangler.toml 的 [vars] 后重新部署。</p>
       </div>`}
-    </aside>
-  </section>`;
+        <div class="auth-mini-flow"><span>上传</span><i data-lucide="chevron-right"></i><span>发布</span><i data-lucide="chevron-right"></i><span>上线</span></div>
+      </aside>
+    </section>
+
+    <section class="product-stage" aria-label="产品工作流预览">
+      <div class="stage-window"><div class="stage-bar"><span></span><span></span><span></span><b>tinysite / product-launch</b><em>准备发布</em></div><div class="stage-body">
+        <div class="stage-files"><small>项目文件</small><p><i data-lucide="file-code-2"></i><b>index.html</b><span>12 KB</span></p><p><i data-lucide="folder"></i><b>assets</b><span>8 个文件</span></p><p><i data-lucide="file-text"></i><b>robots.txt</b><span>1 KB</span></p></div>
+        <div class="stage-deploy"><div class="stage-deploy-head"><span><i data-lucide="git-commit-horizontal"></i>本次发布</span><strong>3 个变更</strong></div><div class="deploy-track"><span class="done"><i data-lucide="check"></i></span><i></i><span class="done"><i data-lucide="check"></i></span><i></i><span class="live"><i data-lucide="rocket"></i></span></div><div class="deploy-labels"><span>接收文件</span><span>生成版本</span><span>网站上线</span></div><div class="stage-live"><i data-lucide="globe-2"></i><div><small>固定访问地址</small><b>product-launch-ts.yongkl.cc</b></div><span>LIVE</span></div></div>
+      </div></div>
+      <p class="stage-caption">从文件到线上版本，一条清晰可控的发布链路。</p>
+    </section>
+
+    <section class="marketing-strip"><span>HTML</span><i></i><span>CSS / JS</span><i></i><span>ZIP</span><i></i><span>Vite / React 构建产物</span><i></i><span>AI 生成页面</span></section>
+
+    <section class="marketing-section" id="features"><div class="section-intro"><p>BUILT FOR SHIPPING</p><h2>少折腾基础设施，<br><span>多花时间做好内容。</span></h2><div>TinySite 把上传、发布、版本和域名放在一个简单工作台里。</div></div>
+      <div class="feature-bento">
+        <article class="feature-card feature-large"><div class="feature-icon amber"><i data-lucide="upload-cloud"></i></div><span>UPLOAD</span><h3>拖进去，就能发</h3><p>支持单文件、整个文件夹与 ZIP。上传前先预览变更，确认无误再正式发布。</p><div class="mini-drop"><i data-lucide="folder-up"></i><b>拖拽文件到这里</b><small>HTML、目录或 ZIP</small></div></article>
+        <article class="feature-card"><div class="feature-icon violet"><i data-lucide="git-branch"></i></div><span>VERSIONS</span><h3>每次发布都有版本</h3><p>历史版本不可变、独立可访问，出现问题一键回滚，不覆盖过去。</p><div class="version-stack"><b>v12 <em>当前</em></b><b>v11</b><b>v10</b></div></article>
+        <article class="feature-card"><div class="feature-icon mint"><i data-lucide="globe-2"></i></div><span>DOMAINS</span><h3>用自己的域名</h3><p>Pro 及以上可绑定三级、四级及更深子域名，验证完成后自动启用 HTTPS。</p><div class="domain-chip"><i data-lucide="lock-keyhole"></i>www.yoursite.com</div></article>
+        <article class="feature-card feature-wide"><div><div class="feature-icon violet"><i data-lucide="link"></i></div><span>STABLE URL</span><h3>一个固定地址，始终展示最新版</h3><p>每个项目自动获得长期地址。更新版本无需修改对外链接，旧版本仍能单独访问。</p></div><div class="url-demo"><small>固定地址</small><code>launch-ts.yongkl.cc</code><i data-lucide="arrow-right"></i><strong>v12</strong></div></article>
+      </div>
+    </section>
+
+    <section class="workflow-section" id="workflow"><div class="section-intro centered"><p>HOW IT WORKS</p><h2>三步上线，没有第四步。</h2><div>从本地文件到公开网站，过程足够简单，也保留必要的控制。</div></div><div class="workflow-grid">
+      <article><span>01</span><div class="workflow-icon"><i data-lucide="folder-plus"></i></div><h3>创建项目</h3><p>给网站起个名字，立即获得固定访问地址。</p></article><article><span>02</span><div class="workflow-icon"><i data-lucide="mouse-pointer-2"></i></div><h3>拖拽上传</h3><p>放入 HTML、静态资源、文件夹或完整 ZIP。</p></article><article><span>03</span><div class="workflow-icon"><i data-lucide="rocket"></i></div><h3>确认发布</h3><p>查看改动后上线，生成可追溯的新版本。</p></article>
+    </div></section>
+
+    <section class="rollback-section"><div><p class="section-label">SAFE BY DEFAULT</p><h2>放心更新，随时回到稳定版本。</h2><p>发布不是覆盖。TinySite 会把一次草稿变更固化成新的不可变版本；回滚同样创建新版本，让历史始终清晰。</p><ul><li><i data-lucide="check"></i>历史版本独立地址</li><li><i data-lucide="check"></i>发布备注与变更明细</li><li><i data-lucide="check"></i>回滚不改写历史</li></ul></div><div class="rollback-visual"><div class="rollback-row current"><span>v12</span><div><b>优化首页内容</b><small>当前线上版本</small></div><em>LIVE</em></div><div class="rollback-row"><span>v11</span><div><b>增加定价说明</b><small>2 天前</small></div><button type="button">回滚到此版本</button></div><div class="rollback-row"><span>v10</span><div><b>首次正式发布</b><small>5 天前</small></div></div></div></section>
+
+    <section class="pricing-section" id="pricing"><div class="section-intro centered"><p>SIMPLE PRICING</p><h2>从免费上线，到持续增长。</h2><div>每个项目都拥有固定访问地址；付费套餐解锁更多项目、容量和自定义域名。</div></div><div class="marketing-pricing">
+      <article><span>FREE</span><h3>¥0<small>/月</small></h3><p>验证想法，发布第一个网站。</p><ul><li>1 个项目</li><li>100 MB 存储</li><li>5 GB 月流量</li><li>固定 TinySite 地址</li></ul><a href="#auth-card" class="btn btn-ghost">免费开始</a></article>
+      <article><span>PRO</span><h3>¥19.9<small>/月</small></h3><p>适合个人作品与长期项目。</p><ul><li>5 个项目</li><li>2 GB 存储</li><li>100 GB 月流量</li><li>1 个自定义域名</li></ul><a href="#auth-card" class="btn btn-ghost">选择 Pro</a></article>
+      <article class="popular"><div class="popular-tag">最受欢迎</div><span>PLUS</span><h3>¥39.9<small>/月</small></h3><p>为多个产品和客户网站准备。</p><ul><li>10 个项目</li><li>10 GB 存储</li><li>500 GB 月流量</li><li>3 个自定义域名</li></ul><a href="#auth-card" class="btn">选择 Plus</a></article>
+      <article><span>ULTRA</span><h3>¥99.9<small>/月</small></h3><p>更多项目与更高资源额度。</p><ul><li>30 个项目</li><li>50 GB 存储</li><li>2 TB 月流量</li><li>每项目 1 个自定义域名</li></ul><a href="#auth-card" class="btn btn-ghost">选择 Ultra</a></article>
+    </div><p class="pricing-note">每个项目最多绑定 1 个自定义域名；当前仅支持子域名。</p></section>
+
+    <section class="faq-section" id="faq"><div class="section-intro"><p>FAQ</p><h2>你可能想问。</h2></div><div class="faq-list">
+      <details><summary>我需要懂服务器或命令行吗？<i data-lucide="plus"></i></summary><p>不需要。准备好静态网站文件，在浏览器里上传并发布即可。</p></details>
+      <details><summary>哪些网站适合放到 TinySite？<i data-lucide="plus"></i></summary><p>产品落地页、作品集、博客、活动页、文档站，以及由 AI 或前端工具生成的静态构建产物。</p></details>
+      <details><summary>更新网站会覆盖旧内容吗？<i data-lucide="plus"></i></summary><p>不会改写历史版本。每次发布生成新版本，固定地址切换到最新版本，旧版本仍可访问和回滚。</p></details>
+      <details><summary>可以绑定自己的域名吗？<i data-lucide="plus"></i></summary><p>Pro、Plus 和 Ultra 支持绑定外部三级、四级及更深子域名。目前暂不支持根域名。</p></details>
+      <details><summary>Free 套餐可以一直用吗？<i data-lucide="plus"></i></summary><p>可以。Free 提供 1 个项目、100 MB 存储和每月 5 GB 流量，不支持自定义域名。</p></details>
+    </div></section>
+
+    <section class="final-cta"><div class="cta-orb"></div><p>READY TO SHIP?</p><h2>别让网站继续躺在文件夹里。</h2><span>现在上传，几分钟后把链接发给世界。</span><a class="btn marketing-primary" href="#auth-card"><i data-lucide="rocket"></i>免费发布网站</a></section>
+    <footer class="marketing-footer"><a class="brand" href="#/"><span class="brand-logo"><i data-lucide="zap"></i></span><span class="brand-name">TinySite</span></a><p>上传、发布、回滚。静态网站上线可以很简单。</p><nav><a href="#features">功能</a><a href="#pricing">价格</a><a href="/llms.txt">llms.txt</a><a href="/sitemap.xml">站点地图</a></nav><small>© ${new Date().getFullYear()} TinySite</small></footer>
+  </div>`;
   if (googleEnabled) setupGoogleSignIn($('#google-auth-block'));
 }
 
@@ -1237,7 +1264,13 @@ async function renderProject(id) {
 // ---------------- 路由 ----------------
 
 function route() {
-  if (!CURRENT_USER) return renderAuth();
+  const marketing = !CURRENT_USER;
+  document.body.classList.toggle('marketing-page', marketing);
+  const marketingNav = document.getElementById('marketing-nav');
+  const topbarEnv = document.querySelector('.topbar-env');
+  if (marketingNav) marketingNav.hidden = !marketing;
+  if (topbarEnv) topbarEnv.hidden = marketing;
+  if (marketing) return renderAuth();
   if (location.hostname.startsWith('admin-ts.')) return renderAdmin();
   const hash = location.hash || '#/';
   const m = hash.match(/^#\/p\/([\w-]+)/);

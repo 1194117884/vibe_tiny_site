@@ -20,11 +20,12 @@ TinySite lets users create projects, upload HTML/CSS/JS (or ZIP archives), stage
 
 ## Core features
 
-- Auth: email register / login / password change / sessions
+- Auth: Google Identity Services login with session cookies
 - Project workspace: file tree, drag-and-drop, directory upload, ZIP extract, context-menu download/delete
 - Draft publish: stage adds/replaces/deletes, then publish one atomic version
 - Versions: notes, change list, independent historical URLs, pagination, one-click rollback
-- Plans: Free / Pro / Plus / Ultra with project, storage, and monthly traffic limits
+- Custom subdomains: exact third-, fourth-, and deeper-level hostnames for Pro / Plus / Ultra
+- Plans: Free / Pro / Plus / Ultra with project, storage, monthly traffic, and custom-domain limits
 - Theming: auto / light / dark
 
 ## SEO & discovery endpoints (console host)
@@ -33,7 +34,7 @@ TinySite lets users create projects, upload HTML/CSS/JS (or ZIP archives), stage
 - `/robots.txt` — crawl rules
 - `/sitemap.xml` — public URLs
 - `/llms.txt` — this file (AI / agent summary)
-- `/og.svg` — social preview image
+- `/og.png` — social preview image
 
 ## Hosted project sites
 
