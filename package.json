@@ -6,6 +6,7 @@
   "description": "TinySite - 基于 Cloudflare Workers + R2 + D1 的静态网站部署工具",
   "scripts": {
     "dev": "wrangler dev",
+    "test": "node --test",
     "ui:build": "tailwindcss -i ./src/ui.css -o ./public/style.css --minify",
     "deploy": "npm run ui:build && wrangler deploy",
     "db:create": "wrangler d1 create tinysite_db",
@@ -21,6 +22,7 @@
     "wrangler": "^4.24.0"
   },
   "dependencies": {
-    "fflate": "^0.8.3"
+    "fflate": "^0.8.3",
+    "tldts": "^7.4.10"
   }
 }

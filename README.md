@@ -11,6 +11,7 @@
 - 草稿发布：将新增、替换、删除汇集为一组草稿操作，发布时原子生成新版本。
 - 版本管理：版本备注、改动明细、历史版本独立地址、分页与一键回滚。
 - 网站访问：固定地址始终指向当前版本；历史版本保持独立可访问。
+- 自定义子域名：支持三级、四级及更深域名通过 CNAME 接入；所有权和 HTTPS 验证完成后才生效，暂不支持根域名。
 - 默认页面：项目创建时自动准备 `index.html`、`404.html` 与 `50x.html`。
 - 套餐与配额：Free / Pro / Plus / Ultra，按项目数、存储与月流量限制资源。
 - 套餐权益队列：不同套餐按优先级排期；同套餐也独立排队，避免合并造成退款或核销歧义。
@@ -81,6 +82,32 @@ npm run deploy
 ```
 
 未配置 `GOOGLE_CLIENT_ID` 时登录入口不可用。邮箱密码注册/登录/改密接口已返回 410。
+
+## 自定义子域名
+
+当前仅支持 `www.example.com`、`app.shop.example.com` 这类精确子域名，通过 Cloudflare for SaaS 接入。`example.com` 根域名和 Nameserver 托管暂不支持。
+
+在 Cloudflare for SaaS provider Zone 配置 fallback origin 和 CNAME target 后设置：
+
+```toml
+[vars]
+CLOUDFLARE_SAAS_ZONE_ID = "..."
+SAAS_CNAME_TARGET = "customers.example.com"
+CUSTOM_DOMAINS_ENABLED = "true"
+```
+
+Cloudflare API Token 必须存为 Worker Secret：
+
+```bash
+npx wrangler secret put CLOUDFLARE_API_TOKEN
+```
+
+每个项目最多绑定一个自定义域名。账号额度为 Free 0 个、Pro 1 个、Plus 3 个、Ultra 按项目数最多 30 个；根域名仅为 Ultra 的后续功能，目前仍未开放。系统不设置全局域名数量上限，但新增前会对比 Cloudflare 与 D1 数量，任何不一致都会停止新增。已有数据库必须依次应用迁移，再部署 Worker：
+
+```bash
+npx wrangler d1 execute tinysite_db --remote --file=./migrations/0008_custom_subdomains.sql
+npx wrangler d1 execute tinysite_db --remote --file=./migrations/0009_plan_custom_domain_limits.sql
+```
 
 ## 本地开发
 

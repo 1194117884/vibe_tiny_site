@@ -1,4 +1,5 @@
 import { unzipSync } from 'fflate';
+import { parse as parseDomain } from 'tldts';
 
 /**
  * TinySite · 静态网站部署工具
@@ -508,18 +509,272 @@ async function changePassword() {
 async function requireOwnedResource(env, user, pathname) {
   const project = pathname.match(/^\/api\/projects\/([^/]+)/)?.[1];
   const version = pathname.match(/^\/api\/versions\/([^/]+)/)?.[1];
-  if (!project && !version) return true;
-  const row = project
-    ? await env.DB.prepare('SELECT id FROM projects WHERE id = ? AND user_id = ?').bind(project, user.id).first()
-    : await env.DB.prepare(`SELECT v.id FROM versions v JOIN projects p ON p.id = v.project_id
+  const domain = pathname.match(/^\/api\/domains\/([^/]+)/)?.[1];
+  if (!project && !version && !domain) return true;
+  let row;
+  if (project) {
+    row = await env.DB.prepare('SELECT id FROM projects WHERE id = ? AND user_id = ?').bind(project, user.id).first();
+  } else if (version) {
+    row = await env.DB.prepare(`SELECT v.id FROM versions v JOIN projects p ON p.id = v.project_id
       WHERE v.id = ? AND p.user_id = ?`).bind(version, user.id).first();
+  } else {
+    row = await env.DB.prepare(`SELECT d.id FROM custom_domains d JOIN projects p ON p.id = d.project_id
+      WHERE d.id = ? AND p.user_id = ? AND d.deleted_at IS NULL`).bind(domain, user.id).first();
+  }
   return Boolean(row);
+}
+
+// ------------------------------- 自定义子域名 -------------------------------
+
+function customDomainsConfigured(env) {
+  return String(env.CUSTOM_DOMAINS_ENABLED || '').toLowerCase() === 'true' &&
+    Boolean(env.CLOUDFLARE_API_TOKEN && env.CLOUDFLARE_SAAS_ZONE_ID && env.SAAS_CNAME_TARGET);
+}
+
+function normalizeCustomSubdomain(value, env = {}) {
+  let raw = String(value || '').trim().toLowerCase().replace(/\.$/, '');
+  if (!raw || raw.includes('/') || raw.includes(':') || raw.includes('@')) throw new Error('请输入完整子域名，不要包含协议、路径或端口');
+  let hostname;
+  try { hostname = new URL(`http://${raw}`).hostname; } catch { throw new Error('域名格式无效'); }
+  if (!hostname || hostname.length > 253) throw new Error('域名格式无效');
+  const labels = hostname.split('.');
+  if (labels.some((label) => !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label))) {
+    throw new Error('域名格式无效');
+  }
+  const parsed = parseDomain(hostname, { allowPrivateDomains: false });
+  if (!parsed.domain || parsed.isIp) throw new Error('请输入有效的公网子域名');
+  if (hostname === parsed.domain) throw new Error('暂不支持根域名，请输入 www.example.com 这类子域名');
+  const platformBase = String(env.SITE_BASE_DOMAIN || '').trim().toLowerCase();
+  if (platformBase && hostname.endsWith(`.${platformBase}`)) {
+    const relative = hostname.slice(0, -(platformBase.length + 1));
+    if (!relative.includes('.') && (relative === 'ts' || relative === 'admin-ts' || relative === 'customers' || relative.endsWith('-ts'))) {
+      throw new Error('不能绑定 TinySite 系统保留域名');
+    }
+  }
+  return { hostname, registrableDomain: parsed.domain };
+}
+
+async function cloudflareRequest(env, path, options = {}) {
+  if (!env.CLOUDFLARE_API_TOKEN) throw new Error('Cloudflare API 尚未配置');
+  const response = await fetch(`https://api.cloudflare.com/client/v4${path}`, {
+    method: options.method || 'GET',
+    headers: {
+      Authorization: `Bearer ${env.CLOUDFLARE_API_TOKEN}`,
+      'Content-Type': 'application/json',
+    },
+    body: options.body == null ? undefined : JSON.stringify(options.body),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.success === false) {
+    if (options.allow404 && response.status === 404) return null;
+    const message = data.errors?.map((error) => error.message).filter(Boolean).join('；');
+    throw new Error(message || `Cloudflare API 请求失败 (${response.status})`);
+  }
+  return options.envelope ? data : data.result;
+}
+
+function customHostnamePath(env, id = '') {
+  const zone = encodeURIComponent(String(env.CLOUDFLARE_SAAS_ZONE_ID || ''));
+  return `/zones/${zone}/custom_hostnames${id ? `/${encodeURIComponent(id)}` : ''}`;
+}
+
+async function createCloudflareCustomHostname(env, hostname) {
+  return cloudflareRequest(env, customHostnamePath(env), {
+    method: 'POST',
+    body: { hostname, ssl: { method: 'txt', type: 'dv' } },
+  });
+}
+
+async function deleteCloudflareCustomHostname(env, id) {
+  if (!id) return;
+  await cloudflareRequest(env, customHostnamePath(env, id), { method: 'DELETE', allow404: true });
+}
+
+function customHostnameVerificationRecords(customHostname) {
+  const records = [];
+  const ownership = customHostname.ownership_verification;
+  if (ownership?.name && ownership?.value) records.push({ type: 'TXT', name: ownership.name, value: ownership.value });
+  for (const validation of customHostname.ssl?.validation_records || []) {
+    if (validation.txt_name && validation.txt_value) records.push({ type: 'TXT', name: validation.txt_name, value: validation.txt_value });
+    if (validation.cname_name && validation.cname_target) records.push({ type: 'CNAME', name: validation.cname_name, value: validation.cname_target });
+  }
+  return records.filter((record, index) => records.findIndex((item) => item.type === record.type && item.name === record.name && item.value === record.value) === index);
+}
+
+function domainStatusFromCloudflare(customHostname) {
+  const hostnameStatus = customHostname.status || 'pending';
+  const sslStatus = customHostname.ssl?.status || 'pending_validation';
+  if (hostnameStatus === 'active' && sslStatus === 'active') return 'active';
+  if (['blocked', 'deleted', 'moved'].includes(hostnameStatus) || ['expired', 'deactivated'].includes(sslStatus)) return 'error';
+  if (hostnameStatus !== 'active') return 'pending_ownership';
+  return 'pending_tls';
+}
+
+function parseVerificationRecords(value) {
+  try { return JSON.parse(value || '[]'); } catch { return []; }
+}
+
+function publicDomain(row, env) {
+  return {
+    id: row.id,
+    project_id: row.project_id,
+    hostname: row.hostname,
+    registrable_domain: row.registrable_domain,
+    status: row.status,
+    hostname_status: row.hostname_status,
+    ssl_status: row.ssl_status,
+    verification_records: parseVerificationRecords(row.verification_records),
+    error_message: row.error_message,
+    cname_target: String(env.SAAS_CNAME_TARGET || '').trim() || null,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+async function applyCloudflareDomainState(env, row, customHostname) {
+  const status = domainStatusFromCloudflare(customHostname);
+  const records = customHostnameVerificationRecords(customHostname);
+  const now = Date.now();
+  const errorMessage = status === 'error'
+    ? (customHostname.verification_errors || []).join('；') || 'Cloudflare 无法验证该子域名'
+    : null;
+  await env.DB.prepare(`UPDATE custom_domains SET status = ?, hostname_status = ?, ssl_status = ?,
+    verification_records = ?, error_message = ?, verified_at = CASE WHEN ? = 'active' THEN COALESCE(verified_at, ?) ELSE verified_at END,
+    last_checked_at = ?, updated_at = ? WHERE id = ?`).bind(
+      status, customHostname.status || null, customHostname.ssl?.status || null, JSON.stringify(records),
+      errorMessage, status, now, now, now, row.id,
+    ).run();
+  return env.DB.prepare('SELECT * FROM custom_domains WHERE id = ? AND deleted_at IS NULL').bind(row.id).first();
+}
+
+async function syncCustomDomain(env, row) {
+  if (row.status === 'deleting') {
+    await deleteCloudflareCustomHostname(env, row.cf_custom_hostname_id);
+    const now = Date.now();
+    await env.DB.prepare('UPDATE custom_domains SET deleted_at = ?, updated_at = ? WHERE id = ?').bind(now, now, row.id).run();
+    return null;
+  }
+  if (!row.cf_custom_hostname_id) return row;
+  const customHostname = await cloudflareRequest(env, customHostnamePath(env, row.cf_custom_hostname_id));
+  return applyCloudflareDomainState(env, row, customHostname);
+}
+
+async function listProjectDomains(request, env, url, { id }) {
+  const account = await accountFor(request, env);
+  const [domains, usage] = await env.DB.batch([
+    env.DB.prepare('SELECT * FROM custom_domains WHERE project_id = ? AND deleted_at IS NULL ORDER BY created_at').bind(id),
+    env.DB.prepare(`SELECT COUNT(*) AS used FROM custom_domains d
+      JOIN projects p ON p.id = d.project_id WHERE p.user_id = ? AND d.deleted_at IS NULL`).bind(account.id),
+  ]);
+  return json({
+    domains: domains.results.map((row) => publicDomain(row, env)),
+    quota: { used: Number(usage.results[0]?.used || 0), limit: Number(account.custom_domain_limit || 0) },
+  });
+}
+
+async function requireAlignedCloudflareHostnames(env) {
+  const [remote, local] = await Promise.all([
+    cloudflareRequest(env, `${customHostnamePath(env)}?page=1&per_page=1`, { envelope: true }),
+    env.DB.prepare(`SELECT COUNT(*) AS used FROM custom_domains
+      WHERE deleted_at IS NULL AND cf_custom_hostname_id IS NOT NULL`).first(),
+  ]);
+  const remoteUsed = Number(remote.result_info?.total_count ?? remote.result?.length ?? 0);
+  const localUsed = Number(local?.used || 0);
+  if (remoteUsed !== localUsed) throw new Error('Cloudflare 域名数量与 TinySite 不一致，已停止新增，请管理员对账');
+}
+
+async function createProjectDomain(request, env, url, { id }) {
+  if (!customDomainsConfigured(env)) return json({ error: '自定义子域名功能尚未开放' }, 503);
+  const body = await request.json().catch(() => ({}));
+  let parsed;
+  try { parsed = normalizeCustomSubdomain(body.hostname, env); } catch (error) { return json({ error: error.message }, 400); }
+  const account = await accountFor(request, env);
+  const limit = Number(account.custom_domain_limit || 0);
+  if (limit < 1) return json({ error: 'Free 套餐不支持自定义域名，请升级到 Pro 或更高套餐' }, 403);
+  const projectDomain = await env.DB.prepare('SELECT id FROM custom_domains WHERE project_id = ? AND deleted_at IS NULL')
+    .bind(id).first();
+  if (projectDomain) return json({ error: '每个项目只能绑定一个自定义域名，请先解绑当前域名' }, 409);
+  const existing = await env.DB.prepare('SELECT id FROM custom_domains WHERE hostname = ? AND deleted_at IS NULL')
+    .bind(parsed.hostname).first();
+  if (existing) return json({ error: '该子域名已经绑定' }, 409);
+
+  const domainId = uid('dom_');
+  const now = Date.now();
+  let customHostname = null;
+  let inserted = false;
+  try {
+    await requireAlignedCloudflareHostnames(env);
+    const created = await env.DB.prepare(`INSERT INTO custom_domains
+      (id, project_id, hostname, registrable_domain, status, created_at, updated_at)
+      SELECT ?, ?, ?, ?, 'provisioning', ?, ?
+      WHERE NOT EXISTS (SELECT 1 FROM custom_domains WHERE project_id = ? AND deleted_at IS NULL)
+        AND (SELECT COUNT(*) FROM custom_domains d JOIN projects p ON p.id = d.project_id
+          WHERE p.user_id = ? AND d.deleted_at IS NULL) < ?`).bind(
+        domainId, id, parsed.hostname, parsed.registrableDomain, now, now, id, account.id, limit,
+      ).run();
+    if (!created.meta.changes) return json({ error: `当前套餐最多绑定 ${limit} 个自定义域名，且每个项目只能绑定一个` }, 429);
+    inserted = true;
+    customHostname = await createCloudflareCustomHostname(env, parsed.hostname);
+    await env.DB.prepare(`UPDATE custom_domains SET cf_custom_hostname_id = ?, updated_at = ? WHERE id = ?`)
+      .bind(customHostname.id, Date.now(), domainId).run();
+    const row = await env.DB.prepare('SELECT * FROM custom_domains WHERE id = ?').bind(domainId).first();
+    const updated = await applyCloudflareDomainState(env, row, customHostname);
+    await audit(env, request, 'domain.create', 'custom_domain', domainId, { hostname: parsed.hostname, project_id: id });
+    return json({ domain: publicDomain(updated, env) }, 201);
+  } catch (error) {
+    if (customHostname?.id) {
+      await env.DB.prepare(`UPDATE custom_domains SET cf_custom_hostname_id = ?, status = 'error',
+        error_message = ?, updated_at = ? WHERE id = ?`).bind(customHostname.id, error.message, Date.now(), domainId).run();
+    } else if (inserted) {
+      await env.DB.prepare('DELETE FROM custom_domains WHERE id = ?').bind(domainId).run();
+    }
+    return json({ error: error.message || '创建子域名绑定失败' }, 502);
+  }
+}
+
+async function verifyProjectDomain(request, env, url, { id }) {
+  const row = await env.DB.prepare('SELECT * FROM custom_domains WHERE id = ? AND deleted_at IS NULL').bind(id).first();
+  if (!row) return json({ error: '子域名绑定不存在' }, 404);
+  try {
+    const updated = await syncCustomDomain(env, row);
+    await audit(env, request, 'domain.verify', 'custom_domain', id, { status: updated?.status });
+    return json({ domain: updated ? publicDomain(updated, env) : null });
+  } catch (error) {
+    await env.DB.prepare('UPDATE custom_domains SET error_message = ?, last_checked_at = ?, updated_at = ? WHERE id = ?')
+      .bind(error.message, Date.now(), Date.now(), id).run();
+    return json({ error: error.message || '验证子域名失败' }, 502);
+  }
+}
+
+async function deleteProjectDomain(request, env, url, { id }) {
+  const row = await env.DB.prepare('SELECT * FROM custom_domains WHERE id = ? AND deleted_at IS NULL').bind(id).first();
+  if (!row) return json({ error: '子域名绑定不存在' }, 404);
+  await env.DB.prepare(`UPDATE custom_domains SET status = 'deleting', updated_at = ? WHERE id = ?`).bind(Date.now(), id).run();
+  try {
+    await syncCustomDomain(env, { ...row, status: 'deleting' });
+    await audit(env, request, 'domain.unbind', 'custom_domain', id, { hostname: row.hostname });
+    return json({ ok: true });
+  } catch (error) {
+    return json({ error: error.message || '解绑子域名失败' }, 502);
+  }
+}
+
+async function reconcileCustomDomains(env, limit = 50) {
+  const rows = await env.DB.prepare(`SELECT * FROM custom_domains WHERE deleted_at IS NULL
+    AND status IN ('provisioning', 'pending_dns', 'pending_ownership', 'pending_tls', 'error', 'deleting')
+    ORDER BY COALESCE(last_checked_at, 0) LIMIT ?`).bind(limit).all();
+  for (const row of rows.results) {
+    try { await syncCustomDomain(env, row); } catch (error) {
+      await env.DB.prepare('UPDATE custom_domains SET error_message = ?, last_checked_at = ?, updated_at = ? WHERE id = ?')
+        .bind(error.message, Date.now(), Date.now(), row.id).run();
+    }
+  }
 }
 
 async function accountFor(request, env) {
   const userId = request.headers.get('x-tinysite-user-id');
   return env.DB.prepare(`SELECT u.*, pl.project_limit, pl.storage_limit_bytes,
-      pl.file_size_limit_bytes, pl.traffic_limit_bytes
+      pl.file_size_limit_bytes, pl.traffic_limit_bytes, pl.custom_domain_limit
     FROM users u JOIN plans pl ON pl.id = u.plan_id WHERE u.id = ?`).bind(userId).first();
 }
 
@@ -542,13 +797,15 @@ async function accountUsage(request, env) {
   await refreshEntitlementSchedule(env, request.headers.get('x-tinysite-user-id'));
   const account = await accountFor(request, env);
   const period = new Date().toISOString().slice(0, 7);
-  const [projects, storage, traffic, plans, entitlements] = await env.DB.batch([
+  const [projects, storage, traffic, domainUsage, plans, entitlements] = await env.DB.batch([
     env.DB.prepare('SELECT COUNT(*) AS count FROM projects WHERE user_id = ?').bind(account.id),
     env.DB.prepare(`SELECT COALESCE(SUM(pf.size), 0) AS bytes FROM project_files pf
       JOIN projects p ON p.id = pf.project_id WHERE p.user_id = ?`).bind(account.id),
     env.DB.prepare('SELECT traffic_bytes FROM monthly_usage WHERE user_id = ? AND period = ?').bind(account.id, period),
+    env.DB.prepare(`SELECT COUNT(*) AS count FROM custom_domains d JOIN projects p ON p.id = d.project_id
+      WHERE p.user_id = ? AND d.deleted_at IS NULL`).bind(account.id),
     env.DB.prepare(`SELECT id, monthly_price_cents, project_limit, storage_limit_bytes,
-      file_size_limit_bytes, traffic_limit_bytes FROM plans ORDER BY monthly_price_cents`),
+      file_size_limit_bytes, traffic_limit_bytes, custom_domain_limit FROM plans ORDER BY monthly_price_cents`),
     env.DB.prepare(`SELECT e.id, e.plan_id, e.duration_days, e.source_type, e.status, e.starts_at, e.ends_at, e.created_at
       FROM plan_entitlements e WHERE e.user_id = ? ORDER BY e.starts_at`).bind(account.id),
   ]);
@@ -559,6 +816,7 @@ async function accountUsage(request, env) {
       storage_limit_bytes: Number(account.storage_limit_bytes),
       file_size_limit_bytes: Number(account.file_size_limit_bytes),
       traffic_limit_bytes: Number(account.traffic_limit_bytes),
+      custom_domain_limit: Number(account.custom_domain_limit || 0),
       expires_at: account.plan_expires_at,
       status: account.status,
     },
@@ -566,6 +824,7 @@ async function accountUsage(request, env) {
       projects: Number(projects.results[0].count),
       storage_bytes: Number(storage.results[0].bytes),
       traffic_bytes: Number(traffic.results[0]?.traffic_bytes || 0),
+      custom_domains: Number(domainUsage.results[0]?.count || 0),
       period,
     },
     plans: plans.results.map((plan) => ({
@@ -575,6 +834,7 @@ async function accountUsage(request, env) {
       storage_limit_bytes: Number(plan.storage_limit_bytes),
       file_size_limit_bytes: Number(plan.file_size_limit_bytes),
       traffic_limit_bytes: Number(plan.traffic_limit_bytes),
+      custom_domain_limit: Number(plan.custom_domain_limit || 0),
     })),
     entitlements: entitlements.results,
   });
@@ -750,6 +1010,8 @@ async function adminProjectDetail(request, env, url, { id }) {
 async function adminDeleteProject(request, env, url, { id }) {
   const p = await env.DB.prepare('SELECT id FROM projects WHERE id = ?').bind(id).first();
   if (!p) return json({ error: '项目不存在' }, 404);
+  const domain = await env.DB.prepare('SELECT id FROM custom_domains WHERE project_id = ? AND deleted_at IS NULL LIMIT 1').bind(id).first();
+  if (domain) return json({ error: '请先解绑项目的自定义子域名，再删除项目' }, 409);
   await deleteR2Prefix(env, `sites/${id}/`);
   await env.DB.batch([
     env.DB.prepare('DELETE FROM project_files WHERE project_id = ?').bind(id),
@@ -882,6 +1144,9 @@ async function updateProject(request, env, url, { id }) {
 async function deleteProject(request, env, url, { id }) {
   const p = await env.DB.prepare('SELECT id FROM projects WHERE id = ?').bind(id).first();
   if (!p) return json({ error: '项目不存在' }, 404);
+
+  const domain = await env.DB.prepare('SELECT id FROM custom_domains WHERE project_id = ? AND deleted_at IS NULL LIMIT 1').bind(id).first();
+  if (domain) return json({ error: '请先解绑项目的自定义子域名，再删除项目' }, 409);
 
   await deleteR2Prefix(env, `sites/${id}/`);
   await env.DB.batch([
@@ -1275,18 +1540,21 @@ async function serveSiteByPath(request, env, url) {
 }
 
 /** 解析项目与版本，然后输出文件 */
-async function serveProjectVersion(env, slug, versionNum, rest, opts = {}) {
+async function serveProjectVersion(env, projectRef, versionNum, rest, opts = {}) {
   const period = new Date().toISOString().slice(0, 7);
+  const byId = typeof projectRef === 'object' && projectRef?.id;
+  const projectValue = byId ? projectRef.id : projectRef;
+  const projectWhere = byId ? 'p.id = ?' : 'p.slug = ?';
   let project = await env.DB.prepare(`SELECT p.*, u.id AS owner_id, u.status AS owner_status, u.plan_expires_at,
       pl.traffic_limit_bytes, COALESCE(mu.traffic_bytes, 0) AS traffic_bytes
     FROM projects p JOIN users u ON u.id = p.user_id JOIN plans pl ON pl.id = u.plan_id
-    LEFT JOIN monthly_usage mu ON mu.user_id = u.id AND mu.period = ? WHERE p.slug = ?`).bind(period, slug).first();
+    LEFT JOIN monthly_usage mu ON mu.user_id = u.id AND mu.period = ? WHERE ${projectWhere}`).bind(period, projectValue).first();
   if (!project) return errorPage(404, '站点不存在', '该项目可能已被删除。');
   if (await refreshEntitlementSchedule(env, project.owner_id)) {
     project = await env.DB.prepare(`SELECT p.*, u.id AS owner_id, u.status AS owner_status, u.plan_expires_at,
-        pl.traffic_limit_bytes, COALESCE(mu.traffic_bytes, 0) AS traffic_bytes
+      pl.traffic_limit_bytes, COALESCE(mu.traffic_bytes, 0) AS traffic_bytes
       FROM projects p JOIN users u ON u.id = p.user_id JOIN plans pl ON pl.id = u.plan_id
-      LEFT JOIN monthly_usage mu ON mu.user_id = u.id AND mu.period = ? WHERE p.slug = ?`).bind(period, slug).first();
+      LEFT JOIN monthly_usage mu ON mu.user_id = u.id AND mu.period = ? WHERE ${projectWhere}`).bind(period, projectValue).first();
   }
   if (project.owner_status !== 'active' || (project.plan_expires_at && Number(project.plan_expires_at) <= Date.now())) {
     return errorPage(403, '网站已暂停', '账户套餐已到期或被暂停，续费后将自动恢复。');
@@ -1319,6 +1587,18 @@ async function serveProjectVersion(env, slug, versionNum, rest, opts = {}) {
     await serveFiles(env, project.id, v.id, v.version, rest, discoveryMeta),
     project.owner_id,
   );
+}
+
+async function serveSiteByCustomHost(request, env, url) {
+  const domain = await env.DB.prepare(`SELECT project_id, status FROM custom_domains
+    WHERE hostname = ? AND deleted_at IS NULL`).bind(url.hostname.toLowerCase()).first();
+  if (!domain) return null;
+  if (request.method !== 'GET' && request.method !== 'HEAD') return new Response('Method Not Allowed', { status: 405 });
+  if (domain.status !== 'active') return errorPage(404, '域名尚未生效', '请完成 CNAME、所有权和 HTTPS 验证。');
+  return serveProjectVersion(env, { id: domain.project_id }, null, url.pathname.replace(/^\//, ''), {
+    siteOrigin: `${url.protocol}//${url.host}`,
+    isCurrent: true,
+  });
 }
 
 function tagSiteResponse(response, userId) {
@@ -1529,6 +1809,7 @@ async function getConfig(request, env) {
     siteBase: base || null,
     siteSuffix: suffix || '',
     googleClientId: googleClientId || null,
+    customDomainsEnabled: customDomainsConfigured(env),
   });
 }
 
@@ -1566,6 +1847,8 @@ const apiRoutes = [
   ['GET', '/api/projects', listProjects],
   ['GET', '/api/projects/:id', getProject],
   ['PATCH', '/api/projects/:id', updateProject],
+  ['GET', '/api/projects/:id/domains', listProjectDomains],
+  ['POST', '/api/projects/:id/domains', createProjectDomain],
   ['GET', '/api/projects/:id/files', listProjectFiles],
   ['GET', '/api/projects/:id/download', downloadProjectFile],
   ['DELETE', '/api/projects/:id', deleteProject],
@@ -1577,6 +1860,8 @@ const apiRoutes = [
   ['POST', '/api/versions/:id/delete', deleteDraftFiles],
   ['POST', '/api/versions/:id/finalize', finalizeVersion],
   ['POST', '/api/versions/:id/abort', abortVersion],
+  ['POST', '/api/domains/:id/verify', verifyProjectDomain],
+  ['DELETE', '/api/domains/:id', deleteProjectDomain],
 ];
 
 async function handleApi(request, env, url) {
@@ -1601,6 +1886,8 @@ async function handleApi(request, env, url) {
   return json({ error: '接口不存在' }, 404);
 }
 
+export const __test = { normalizeCustomSubdomain, domainStatusFromCloudflare };
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -1610,6 +1897,15 @@ export default {
       // 项目域名:{slug}{suffix}.{base} 或 {slug}-v{n}{suffix}.{base};顶级服务域名走管理后台
       // 管理后台域名（如 ts.yongkl.cc）同属 base 的子域名，但不能被当作项目站点。
       const systemHosts = new Set([`ts.${base}`, `admin-ts.${base}`]);
+      const customResponse = await serveSiteByCustomHost(request, env, url);
+      if (customResponse) {
+        const userId = customResponse.headers.get('x-tinysite-internal-user');
+        customResponse.headers.delete('x-tinysite-internal-user');
+        if (customResponse.status < 400 && request.method === 'GET') {
+          ctx.waitUntil(recordTraffic(env, userId, Number(customResponse.headers.get('content-length')) || 0));
+        }
+        return customResponse;
+      }
       if (base && !systemHosts.has(host) && host.endsWith('.' + base)) {
         const response = await serveSiteByHost(request, env, base, url);
         const userId = response.headers.get('x-tinysite-internal-user');
@@ -1640,5 +1936,8 @@ export default {
       if (url.pathname.startsWith('/api/')) return json({ error: String((err && err.message) || err) }, 500);
       return errorPage(500, '服务器错误', '请稍后重试。');
     }
+  },
+  async scheduled(controller, env, ctx) {
+    ctx.waitUntil(reconcileCustomDomains(env));
   },
 };

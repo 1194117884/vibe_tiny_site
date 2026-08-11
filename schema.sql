@@ -69,15 +69,16 @@ CREATE TABLE IF NOT EXISTS plans (
   project_limit INTEGER NOT NULL,
   storage_limit_bytes INTEGER NOT NULL,
   file_size_limit_bytes INTEGER NOT NULL,
-  traffic_limit_bytes INTEGER NOT NULL
+  traffic_limit_bytes INTEGER NOT NULL,
+  custom_domain_limit INTEGER NOT NULL DEFAULT 0
 );
 INSERT OR REPLACE INTO plans
-  (id, monthly_price_cents, project_limit, storage_limit_bytes, file_size_limit_bytes, traffic_limit_bytes)
+  (id, monthly_price_cents, project_limit, storage_limit_bytes, file_size_limit_bytes, traffic_limit_bytes, custom_domain_limit)
 VALUES
-  ('free', 0, 1, 104857600, 10485760, 5368709120),
-  ('pro', 1990, 5, 2147483648, 52428800, 107374182400),
-  ('plus', 2990, 10, 10737418240, 104857600, 536870912000),
-  ('ultra', 5990, 30, 53687091200, 104857600, 2199023255552);
+  ('free', 0, 1, 104857600, 10485760, 5368709120, 0),
+  ('pro', 1990, 5, 2147483648, 52428800, 107374182400, 1),
+  ('plus', 3990, 10, 10737418240, 104857600, 536870912000, 3),
+  ('ultra', 9990, 30, 53687091200, 104857600, 2199023255552, 30);
 
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, password_salt TEXT NOT NULL,
@@ -117,3 +118,26 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 ALTER TABLE projects ADD COLUMN user_id TEXT REFERENCES users(id);
 CREATE INDEX IF NOT EXISTS idx_projects_user ON projects(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id, expires_at);
+
+-- Cloudflare for SaaS 精确子域名绑定。每个项目最多一个，账号额度由套餐决定。
+CREATE TABLE IF NOT EXISTS custom_domains (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  hostname TEXT NOT NULL,
+  registrable_domain TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'provisioning' CHECK (status IN ('provisioning', 'pending_dns', 'pending_ownership', 'pending_tls', 'active', 'error', 'deleting')),
+  cf_custom_hostname_id TEXT UNIQUE,
+  hostname_status TEXT,
+  ssl_status TEXT,
+  verification_records TEXT,
+  error_message TEXT,
+  verified_at INTEGER,
+  last_checked_at INTEGER,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  deleted_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_custom_domains_project ON custom_domains(project_id, deleted_at, created_at);
+CREATE INDEX IF NOT EXISTS idx_custom_domains_pending ON custom_domains(status, last_checked_at) WHERE deleted_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_domains_hostname_active ON custom_domains(hostname) WHERE deleted_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_custom_domains_project_active ON custom_domains(project_id) WHERE deleted_at IS NULL;

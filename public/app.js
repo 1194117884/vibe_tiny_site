@@ -81,6 +81,7 @@ function debounce(fn, ms) {
 let SITE_BASE = null;
 let SITE_SUFFIX = '';
 let GOOGLE_CLIENT_ID = null;
+let CUSTOM_DOMAINS_ENABLED = false;
 let CURRENT_USER = null;
 let googleScriptPromise = null;
 const siteUrl = (slug) =>
@@ -210,6 +211,10 @@ const api = {
   getProject: (id) => req(`/api/projects/${id}`),
   updateProject: (id, data) => req(`/api/projects/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteProject: (id) => req(`/api/projects/${id}`, { method: 'DELETE' }),
+  listDomains: (id) => req(`/api/projects/${id}/domains`),
+  createDomain: (id, hostname) => req(`/api/projects/${id}/domains`, { method: 'POST', body: JSON.stringify({ hostname }) }),
+  verifyDomain: (id) => req(`/api/domains/${id}/verify`, { method: 'POST' }),
+  deleteDomain: (id) => req(`/api/domains/${id}`, { method: 'DELETE' }),
   listVersions: (id, page = 1) => req(`/api/projects/${id}/versions?page=${page}`),
   listFiles: (id) => req(`/api/projects/${id}/files`),
   createVersion: (id) => req(`/api/projects/${id}/versions`, { method: 'POST' }),
@@ -535,6 +540,7 @@ function renderUsage({ plan, usage, plans, entitlements }) {
   $('#usage').innerHTML = `
     <div class="usage-plan"><span>当前套餐</span><strong>${esc(plan.id).toUpperCase()}</strong><small>${expires}</small></div>
     ${card('项目数量', usage.projects, plan.project_limit, `${usage.projects} / ${plan.project_limit} 个项目`)}
+    ${card('自定义域名', usage.custom_domains, plan.custom_domain_limit, plan.custom_domain_limit ? `${usage.custom_domains} / ${plan.custom_domain_limit} 个域名` : 'Free 套餐不支持')}
     ${card('存储空间', usage.storage_bytes, plan.storage_limit_bytes, `${fmtBytes(usage.storage_bytes)} / ${fmtBytes(plan.storage_limit_bytes)}`)}
     ${card('本月流量', usage.traffic_bytes, plan.traffic_limit_bytes, `${fmtBytes(usage.traffic_bytes)} / ${fmtBytes(plan.traffic_limit_bytes)} · ${usage.period}`)}`;
   renderPlanCards(plans, plan.id, entitlements);
@@ -546,7 +552,11 @@ function renderPlanCards(plans, currentPlanId, entitlements) {
   $('#plans').innerHTML = `<div class="section-heading"><div><h2>套餐中心</h2><p>购买和赠送权益会独立排队。</p></div><form id="redeem-form" class="redeem-form"><input name="code" placeholder="输入套餐赠送码" required/><button class="btn" type="submit">兑换</button></form></div><div class="plan-grid">${plans.map((plan) => {
     const active = plan.id === currentPlanId;
     const purchasable = plan.monthly_price_cents > 0;
-    return `<article class="plan-card ${active ? 'active' : ''}"><div><span class="plan-name">${esc(plan.id).toUpperCase()}</span><strong>${price(plan.monthly_price_cents)}</strong></div><ul><li>${plan.project_limit} 个项目</li><li>${fmtBytes(plan.storage_limit_bytes)} 存储</li><li>${fmtBytes(plan.file_size_limit_bytes)} 单文件上限</li><li>${fmtBytes(plan.traffic_limit_bytes)} / 月流量</li></ul><button class="btn ${active ? 'btn-ghost' : ''}" data-select-plan="${esc(plan.id)}" ${purchasable ? '' : 'disabled'}>${purchasable ? (active ? '续费 30 天' : '模拟购买 30 天') : '基础套餐'}</button></article>`;
+    const domainBenefit = plan.custom_domain_limit
+      ? `${plan.custom_domain_limit} 个自定义域名（每项目 1 个）`
+      : '不支持自定义域名';
+    const rootBenefit = plan.id === 'ultra' ? '<li>根域名绑定：开发中</li>' : '';
+    return `<article class="plan-card ${active ? 'active' : ''}"><div><span class="plan-name">${esc(plan.id).toUpperCase()}</span><strong>${price(plan.monthly_price_cents)}</strong></div><ul><li>${plan.project_limit} 个项目</li><li>${domainBenefit}</li>${rootBenefit}<li>${fmtBytes(plan.storage_limit_bytes)} 存储</li><li>${fmtBytes(plan.file_size_limit_bytes)} 单文件上限</li><li>${fmtBytes(plan.traffic_limit_bytes)} / 月流量</li></ul><button class="btn ${active ? 'btn-ghost' : ''}" data-select-plan="${esc(plan.id)}" ${purchasable ? '' : 'disabled'}>${purchasable ? (active ? '续费 30 天' : '模拟购买 30 天') : '基础套餐'}</button></article>`;
   }).join('')}</div><div class="entitlement-queue"><h3>套餐权益队列</h3>${queue.length ? queue.map((entry) => `<div class="entitlement-row ${entry.status}"><span>${entry.status === 'active' ? '当前生效' : '后续生效'}</span><b>${esc(entry.plan_id).toUpperCase()}</b><small>${entry.duration_days} 天 · ${fmtTime(entry.starts_at)} → ${fmtTime(entry.ends_at)} · ${entry.source_type === 'activation_code' ? '赠送码' : '模拟购买'}</small></div>`).join('') : '<p>当前没有付费套餐权益，使用 Free 基础套餐。</p>'}</div>`;
   $('#redeem-form').onsubmit = async (e) => {
     e.preventDefault();
@@ -620,11 +630,11 @@ const STATUS_MAP = {
 async function renderProject(id) {
   app.innerHTML = `<div class="skeleton">加载中…</div>`;
 
-  let project, versionsData, currentFilesData, accountData;
+  let project, versionsData, currentFilesData, accountData, domainsData;
   let versionPage = 1;
   try {
-    [{ project }, versionsData, currentFilesData, accountData] = await Promise.all([
-      api.getProject(id), api.listVersions(id, versionPage), api.listFiles(id), api.accountUsage(),
+    [{ project }, versionsData, currentFilesData, accountData, domainsData] = await Promise.all([
+      api.getProject(id), api.listVersions(id, versionPage), api.listFiles(id), api.accountUsage(), api.listDomains(id),
     ]);
   } catch (e) {
     app.innerHTML = `
@@ -695,10 +705,109 @@ async function renderProject(id) {
           <div class="rail-actions"><button class="btn btn-sm btn-ghost" id="btn-edit-project-rail" type="button"><i data-lucide="pencil"></i>编辑</button></div>
         </div>
         <div class="project-rail-block"><span>固定访问地址</span><code>${siteUrl(project.slug)}</code><div class="rail-actions"><button class="btn btn-sm btn-ghost" id="btn-copy">复制</button><a class="btn btn-sm btn-ghost" href="${siteUrl(project.slug)}" target="_blank" rel="noopener">打开 ↗</a></div></div>
+        <div class="project-rail-block custom-domain-rail">
+          <div class="custom-domain-rail-head"><span>自定义域名</span><small id="domain-quota"></small></div>
+          <small>支持 CNAME 接入的三级、四级及更深域名；${accountData.plan.id === 'ultra' ? '根域名绑定开发中。' : '根域名将由 Ultra 套餐提供，目前开发中。'}</small>
+          ${CUSTOM_DOMAINS_ENABLED && Number(domainsData.quota?.limit || 0) > 0 ? `<form class="domain-add-form" id="domain-add-form">
+            <input id="domain-hostname" type="text" maxlength="253" placeholder="例如 www.example.com" autocomplete="off" required />
+            <button class="btn" type="submit"><i data-lucide="globe-2"></i>绑定域名</button>
+          </form>` : `<div class="domain-disabled">${CUSTOM_DOMAINS_ENABLED ? 'Free 套餐不支持自定义域名，请升级到 Pro 或更高套餐。' : '自定义域名功能正在准备中，当前项目随机域名不受影响。'}</div>`}
+          <div id="domains-body"></div>
+        </div>
         <div class="project-rail-block"><span>当前上线版本</span><strong>${project.current_version ? `v${project.current_version}` : '尚未发布'}</strong><small>${project.current_version ? '固定地址正指向此版本' : '发布文件后即可访问'}</small></div>
         <div class="project-rail-block rail-danger"><span>危险操作</span><small>删除项目会同时删除全部版本文件。</small><button class="btn btn-danger" id="btn-del">删除项目</button></div>
       </aside>
     </div>`;
+
+  // ---- 自定义域名 ----
+  const DOMAIN_STATUS = {
+    provisioning: ['正在创建', 'badge-uploading'],
+    pending_dns: ['等待 CNAME', 'badge-uploading'],
+    pending_ownership: ['等待验证', 'badge-uploading'],
+    pending_tls: ['签发 HTTPS', 'badge-uploading'],
+    active: ['已生效', 'badge-active'],
+    error: ['验证失败', 'badge-failed'],
+    deleting: ['正在解绑', 'badge-uploading'],
+  };
+
+  function renderDomains() {
+    const body = $('#domains-body');
+    const domains = domainsData.domains || [];
+    const quota = domainsData.quota || { used: 0, limit: 0 };
+    $('#domain-quota').textContent = `套餐额度 ${quota.used}/${quota.limit}`;
+    const form = $('#domain-add-form');
+    if (form) form.hidden = domains.length > 0 || quota.used >= quota.limit;
+    if (!quota.limit) {
+      body.innerHTML = '';
+      return;
+    }
+    if (!domains.length) {
+      body.innerHTML = quota.used >= quota.limit
+        ? '<div class="domain-empty">当前套餐的自定义域名额度已用完。</div>'
+        : '<div class="domain-empty">尚未绑定域名。绑定后请到原 DNS 服务商添加页面提供的 CNAME 和验证记录。</div>';
+      return;
+    }
+    body.innerHTML = `<div class="domain-list">${domains.map((domain) => {
+      const [statusLabel, statusClass] = DOMAIN_STATUS[domain.status] || [domain.status, ''];
+      const verification = (domain.verification_records || []).map((record) => `
+        <div class="dns-record"><span>${esc(record.type)}</span><code>${esc(record.name)}</code><code>${esc(record.value)}</code><button class="btn btn-sm btn-ghost" data-copy="${esc(record.value)}">复制值</button></div>`).join('');
+      return `<article class="domain-item" data-domain-id="${esc(domain.id)}">
+        <div class="domain-item-head"><div><strong>${esc(domain.hostname)}</strong><span>精确子域名 CNAME</span></div><span class="badge ${statusClass}">${esc(statusLabel)}</span></div>
+        ${domain.error_message ? `<p class="domain-error">${esc(domain.error_message)}</p>` : ''}
+        ${domain.status !== 'active' && domain.status !== 'deleting' ? `<div class="domain-guide">
+          <strong>请在当前 DNS 服务商添加记录</strong>
+          <div class="dns-record"><span>CNAME</span><code>${esc(domain.hostname)}</code><code>${esc(domain.cname_target || '-')}</code>${domain.cname_target ? `<button class="btn btn-sm btn-ghost" data-copy="${esc(domain.cname_target)}">复制目标</button>` : ''}</div>
+          ${verification ? `<p>Cloudflare 所有权或 HTTPS 验证记录：</p>${verification}` : ''}
+        </div>` : ''}
+        <div class="domain-actions">
+          ${domain.status === 'active' ? `<a class="btn btn-sm btn-ghost" href="https://${esc(domain.hostname)}/" target="_blank" rel="noopener">打开 ↗</a>` : ''}
+          ${domain.status !== 'deleting' ? '<button class="btn btn-sm btn-ghost" data-domain-verify>检查验证</button><button class="btn btn-sm btn-danger" data-domain-delete>解绑</button>' : ''}
+        </div>
+      </article>`;
+    }).join('')}</div>`;
+    body.querySelectorAll('[data-copy]').forEach((button) => {
+      button.onclick = () => copyText(button.dataset.copy).then(() => toast('DNS 配置值已复制'));
+    });
+    body.querySelectorAll('.domain-item').forEach((item) => {
+      const domain = domains.find((candidate) => candidate.id === item.dataset.domainId);
+      const verify = $('[data-domain-verify]', item);
+      if (verify) verify.onclick = async () => {
+        verify.disabled = true;
+        try { await api.verifyDomain(domain.id); toast('验证状态已更新'); }
+        catch (e) { toast(e.message, 'error'); }
+        await refreshDomains();
+      };
+      const remove = $('[data-domain-delete]', item);
+      if (remove) remove.onclick = async () => {
+        const ok = await confirmModal('解绑子域名', `将停止 ${domain.hostname} 访问此项目，项目、版本和文件不会删除。`, '确认解绑', true);
+        if (!ok) return;
+        try { await api.deleteDomain(domain.id); toast('子域名已解绑'); await refreshDomains(); }
+        catch (e) { toast(e.message, 'error'); }
+      };
+    });
+  }
+
+  async function refreshDomains() {
+    domainsData = await api.listDomains(project.id);
+    renderDomains();
+  }
+
+  const domainForm = $('#domain-add-form');
+  if (domainForm) domainForm.onsubmit = async (event) => {
+    event.preventDefault();
+    const hostname = $('#domain-hostname').value.trim();
+    if (!hostname) return;
+    const button = domainForm.querySelector('button[type="submit"]');
+    button.disabled = true;
+    try {
+      await api.createDomain(project.id, hostname);
+      $('#domain-hostname').value = '';
+      toast('绑定已创建，请配置 DNS 后检查验证');
+      await refreshDomains();
+    } catch (e) { toast(e.message, 'error'); }
+    finally { button.disabled = false; }
+  };
+  renderDomains();
 
   // ---- 项目信息 / 固定地址 ----
   function applyProjectName(name) {
@@ -1145,6 +1254,7 @@ fetch('/api/config')
     SITE_BASE = cfg.siteBase || null;
     SITE_SUFFIX = cfg.siteSuffix || '';
     GOOGLE_CLIENT_ID = cfg.googleClientId || null;
+    CUSTOM_DOMAINS_ENABLED = Boolean(cfg.customDomainsEnabled);
   })
   .catch(() => {})
   .then(async () => {
