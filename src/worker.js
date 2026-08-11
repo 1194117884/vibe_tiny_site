@@ -518,7 +518,8 @@ async function requireOwnedResource(env, user, pathname) {
 
 async function accountFor(request, env) {
   const userId = request.headers.get('x-tinysite-user-id');
-  return env.DB.prepare(`SELECT u.*, pl.project_limit, pl.storage_limit_bytes, pl.traffic_limit_bytes
+  return env.DB.prepare(`SELECT u.*, pl.project_limit, pl.storage_limit_bytes,
+      pl.file_size_limit_bytes, pl.traffic_limit_bytes
     FROM users u JOIN plans pl ON pl.id = u.plan_id WHERE u.id = ?`).bind(userId).first();
 }
 
@@ -546,7 +547,8 @@ async function accountUsage(request, env) {
     env.DB.prepare(`SELECT COALESCE(SUM(pf.size), 0) AS bytes FROM project_files pf
       JOIN projects p ON p.id = pf.project_id WHERE p.user_id = ?`).bind(account.id),
     env.DB.prepare('SELECT traffic_bytes FROM monthly_usage WHERE user_id = ? AND period = ?').bind(account.id, period),
-    env.DB.prepare('SELECT id, monthly_price_cents, project_limit, storage_limit_bytes, traffic_limit_bytes FROM plans ORDER BY monthly_price_cents'),
+    env.DB.prepare(`SELECT id, monthly_price_cents, project_limit, storage_limit_bytes,
+      file_size_limit_bytes, traffic_limit_bytes FROM plans ORDER BY monthly_price_cents`),
     env.DB.prepare(`SELECT e.id, e.plan_id, e.duration_days, e.source_type, e.status, e.starts_at, e.ends_at, e.created_at
       FROM plan_entitlements e WHERE e.user_id = ? ORDER BY e.starts_at`).bind(account.id),
   ]);
@@ -555,6 +557,7 @@ async function accountUsage(request, env) {
       id: account.plan_id,
       project_limit: Number(account.project_limit),
       storage_limit_bytes: Number(account.storage_limit_bytes),
+      file_size_limit_bytes: Number(account.file_size_limit_bytes),
       traffic_limit_bytes: Number(account.traffic_limit_bytes),
       expires_at: account.plan_expires_at,
       status: account.status,
@@ -570,6 +573,7 @@ async function accountUsage(request, env) {
       monthly_price_cents: Number(plan.monthly_price_cents),
       project_limit: Number(plan.project_limit),
       storage_limit_bytes: Number(plan.storage_limit_bytes),
+      file_size_limit_bytes: Number(plan.file_size_limit_bytes),
       traffic_limit_bytes: Number(plan.traffic_limit_bytes),
     })),
     entitlements: entitlements.results,
@@ -1015,9 +1019,13 @@ async function uploadFileStream(request, env, url, { id }) {
   const size = Number(request.headers.get('x-tinysite-size'));
   if (!rel || !Number.isSafeInteger(size) || size < 0) return json({ error: '缺少有效的文件路径或大小' }, 400);
   if (!request.body) return json({ error: '文件内容为空' }, 400);
-  if (size > 30 * 1024 * 1024) return json({ error: '单个文件不能超过 30MB' }, 400);
-
+  const contentLength = Number(request.headers.get('content-length'));
+  if (!Number.isSafeInteger(contentLength) || contentLength !== size) return json({ error: '文件大小与请求内容不一致' }, 400);
   const account = await accountFor(request, env);
+  const fileSizeLimit = Number(account.file_size_limit_bytes);
+  if (size > fileSizeLimit) {
+    return json({ error: `${account.plan_id.toUpperCase()} 套餐单个文件不能超过 ${fileSizeLimit / (1024 * 1024)}MB` }, 413);
+  }
   const storageError = await ensureStorageLimit(env, account, version, [{ path: rel, size }]);
   if (storageError) return storageError;
 
@@ -1035,9 +1043,13 @@ async function uploadZip(request, env, url, { id }) {
   const version = await env.DB.prepare('SELECT * FROM versions WHERE id = ?').bind(id).first();
   if (!version) return json({ error: '版本不存在' }, 404);
   if (version.status !== 'uploading') return json({ error: '该版本已结束上传，请重新创建部署' }, 409);
+  const account = await accountFor(request, env);
   const body = new Uint8Array(await request.arrayBuffer());
   if (!body.length) return json({ error: 'ZIP 文件为空' }, 400);
-  if (body.byteLength > 30 * 1024 * 1024) return json({ error: 'ZIP 文件不能超过 30MB' }, 400);
+  const fileSizeLimit = Number(account.file_size_limit_bytes);
+  if (body.byteLength > fileSizeLimit) {
+    return json({ error: `${account.plan_id.toUpperCase()} 套餐 ZIP 文件不能超过 ${fileSizeLimit / (1024 * 1024)}MB` }, 413);
+  }
 
   let archive;
   try { archive = unzipSync(body); } catch { return json({ error: '无法读取 ZIP 文件' }, 400); }
@@ -1059,7 +1071,6 @@ async function uploadZip(request, env, url, { id }) {
   const rows = [...unique.values()].map(({ path, data }) => [
     id, path, 'upsert', `sites/${version.project_id}/v${version.version}/${path}`, data.byteLength, mimeOf(path), data,
   ]);
-  const account = await accountFor(request, env);
   const storageError = await ensureStorageLimit(env, account, version, rows.map((row) => ({ path: row[1], size: row[4] })));
   if (storageError) return storageError;
   for (let i = 0; i < rows.length; i += 20) {

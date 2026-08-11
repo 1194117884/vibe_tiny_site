@@ -546,7 +546,7 @@ function renderPlanCards(plans, currentPlanId, entitlements) {
   $('#plans').innerHTML = `<div class="section-heading"><div><h2>套餐中心</h2><p>购买和赠送权益会独立排队。</p></div><form id="redeem-form" class="redeem-form"><input name="code" placeholder="输入套餐赠送码" required/><button class="btn" type="submit">兑换</button></form></div><div class="plan-grid">${plans.map((plan) => {
     const active = plan.id === currentPlanId;
     const purchasable = plan.monthly_price_cents > 0;
-    return `<article class="plan-card ${active ? 'active' : ''}"><div><span class="plan-name">${esc(plan.id).toUpperCase()}</span><strong>${price(plan.monthly_price_cents)}</strong></div><ul><li>${plan.project_limit} 个项目</li><li>${fmtBytes(plan.storage_limit_bytes)} 存储</li><li>${fmtBytes(plan.traffic_limit_bytes)} / 月流量</li></ul><button class="btn ${active ? 'btn-ghost' : ''}" data-select-plan="${esc(plan.id)}" ${purchasable ? '' : 'disabled'}>${purchasable ? (active ? '续费 30 天' : '模拟购买 30 天') : '基础套餐'}</button></article>`;
+    return `<article class="plan-card ${active ? 'active' : ''}"><div><span class="plan-name">${esc(plan.id).toUpperCase()}</span><strong>${price(plan.monthly_price_cents)}</strong></div><ul><li>${plan.project_limit} 个项目</li><li>${fmtBytes(plan.storage_limit_bytes)} 存储</li><li>${fmtBytes(plan.file_size_limit_bytes)} 单文件上限</li><li>${fmtBytes(plan.traffic_limit_bytes)} / 月流量</li></ul><button class="btn ${active ? 'btn-ghost' : ''}" data-select-plan="${esc(plan.id)}" ${purchasable ? '' : 'disabled'}>${purchasable ? (active ? '续费 30 天' : '模拟购买 30 天') : '基础套餐'}</button></article>`;
   }).join('')}</div><div class="entitlement-queue"><h3>套餐权益队列</h3>${queue.length ? queue.map((entry) => `<div class="entitlement-row ${entry.status}"><span>${entry.status === 'active' ? '当前生效' : '后续生效'}</span><b>${esc(entry.plan_id).toUpperCase()}</b><small>${entry.duration_days} 天 · ${fmtTime(entry.starts_at)} → ${fmtTime(entry.ends_at)} · ${entry.source_type === 'activation_code' ? '赠送码' : '模拟购买'}</small></div>`).join('') : '<p>当前没有付费套餐权益，使用 Free 基础套餐。</p>'}</div>`;
   $('#redeem-form').onsubmit = async (e) => {
     e.preventDefault();
@@ -620,10 +620,12 @@ const STATUS_MAP = {
 async function renderProject(id) {
   app.innerHTML = `<div class="skeleton">加载中…</div>`;
 
-  let project, versionsData, currentFilesData;
+  let project, versionsData, currentFilesData, accountData;
   let versionPage = 1;
   try {
-    [{ project }, versionsData, currentFilesData] = await Promise.all([api.getProject(id), api.listVersions(id, versionPage), api.listFiles(id)]);
+    [{ project }, versionsData, currentFilesData, accountData] = await Promise.all([
+      api.getProject(id), api.listVersions(id, versionPage), api.listFiles(id), api.accountUsage(),
+    ]);
   } catch (e) {
     app.innerHTML = `
       <a class="back-link" href="#/"><i data-lucide="arrow-left"></i> 返回项目列表</a>
@@ -655,7 +657,7 @@ async function renderProject(id) {
         </div>
         <div class="card deploy-card">
       <div class="workspace-head">
-        <div><h2 class="section-title">文件工作区</h2><p>所有操作先进入草稿，发布版本时才一次性上线。右键文件、文件夹或空白区域可查看更多操作。</p></div>
+        <div><h2 class="section-title">文件工作区</h2><p>所有操作先进入草稿，发布版本时才一次性上线。当前 ${esc(accountData.plan.id).toUpperCase()} 套餐单文件上限 ${fmtBytes(accountData.plan.file_size_limit_bytes)}。</p></div>
         <div class="workspace-actions">
           <button class="btn btn-sm btn-ghost" id="btn-pick-files" type="button"><i data-lucide="upload"></i>上传文件</button>
           <button class="btn btn-sm btn-ghost" id="btn-pick-dir" type="button"><i data-lucide="folder-up"></i>上传文件夹</button>
@@ -898,8 +900,16 @@ async function renderProject(id) {
   function addFiles(list) {
     if (deploying) return;
     selectedZip = null;
+    const oversized = list.filter((entry) => entry.file.size > accountData.plan.file_size_limit_bytes);
+    if (oversized.length) {
+      const detail = oversized.length === 1 ? `“${oversized[0].file.name}”` : `${oversized.length} 个文件`;
+      toast(`${detail}超过当前套餐的 ${fmtBytes(accountData.plan.file_size_limit_bytes)} 单文件上限`, 'error');
+    }
     const map = new Map(selected.map((f) => [f.path, f]));
-    for (const f of list) if (f.path) { map.set(f.path, f); selectedDeletes.delete(f.path); }
+    for (const f of list) if (f.path && f.file.size <= accountData.plan.file_size_limit_bytes) {
+      map.set(f.path, f);
+      selectedDeletes.delete(f.path);
+    }
     selected = [...map.values()];
     renderSelected();
   }

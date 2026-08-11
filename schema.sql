@@ -68,13 +68,16 @@ CREATE TABLE IF NOT EXISTS plans (
   monthly_price_cents INTEGER NOT NULL,
   project_limit INTEGER NOT NULL,
   storage_limit_bytes INTEGER NOT NULL,
+  file_size_limit_bytes INTEGER NOT NULL,
   traffic_limit_bytes INTEGER NOT NULL
 );
-INSERT OR REPLACE INTO plans VALUES
-  ('free', 0, 1, 104857600, 5368709120),
-  ('pro', 1990, 5, 2147483648, 107374182400),
-  ('plus', 2990, 10, 10737418240, 536870912000),
-  ('ultra', 5990, 30, 53687091200, 2199023255552);
+INSERT OR REPLACE INTO plans
+  (id, monthly_price_cents, project_limit, storage_limit_bytes, file_size_limit_bytes, traffic_limit_bytes)
+VALUES
+  ('free', 0, 1, 104857600, 10485760, 5368709120),
+  ('pro', 1990, 5, 2147483648, 52428800, 107374182400),
+  ('plus', 2990, 10, 10737418240, 104857600, 536870912000),
+  ('ultra', 5990, 30, 53687091200, 104857600, 2199023255552);
 
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, password_salt TEXT NOT NULL,

@@ -1,0 +1,9 @@
+ALTER TABLE plans ADD COLUMN file_size_limit_bytes INTEGER NOT NULL DEFAULT 31457280;
+
+UPDATE plans SET file_size_limit_bytes = CASE id
+  WHEN 'free' THEN 10485760
+  WHEN 'pro' THEN 52428800
+  WHEN 'plus' THEN 104857600
+  WHEN 'ultra' THEN 104857600
+  ELSE 31457280
+END;

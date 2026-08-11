@@ -27,6 +27,7 @@ Rollback reads the selected historical snapshot, calculates the inverse file cha
 - The project owner is authoritative for management API access.
 - Version and file endpoints inherit project ownership checks.
 - Storage is checked before upload and released when files or projects are deleted.
+- Each uploaded file is checked against the active plan's per-file size limit in both the console and Worker.
 - Static site traffic is recorded asynchronously so delivery latency does not depend on usage accounting.
 
 ## Schema and migrations
