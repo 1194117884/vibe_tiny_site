@@ -38,11 +38,18 @@ must still agree before a new hostname is created.
 
 Rollback reads the selected historical snapshot, calculates the inverse file changes against the current tree, and publishes a new version. It never mutates a historical version in place.
 
+## Stripe billing
+
+Paid plans use Stripe Checkout subscriptions. The browser can only request a Checkout or Billing Portal URL; it cannot activate a plan. A signed Stripe Webhook is the payment authority. Each unique paid invoice creates one idempotent `stripe_invoice` entitlement using the invoice billing period, while refunds revoke only the matching entitlement and re-run the existing entitlement schedule.
+
+Stripe customers, subscriptions, payments and processed event IDs are stored separately for reconciliation and administration. The operator console lists billing state and can create a full refund or immediately cancel a subscription through Stripe. Secrets are Worker Secrets, price IDs are deployment variables, and `STRIPE_ENABLED` fails closed until all required configuration is present.
+
 ## Tenant and quota boundaries
 
 - The project owner is authoritative for management API access.
 - Version and file endpoints inherit project ownership checks.
 - Domain operations inherit project ownership.
+- Checkout and Billing Portal operations inherit the authenticated account; Stripe Webhooks require a valid timestamped signature and event IDs are processed idempotently.
 - Each project has at most one active custom-domain binding, and account-wide
   binding counts cannot exceed the active plan entitlement.
 - Host routing requires an exact active hostname mapping and never accepts a project identifier supplied by the visitor.

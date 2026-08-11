@@ -109,6 +109,43 @@ npx wrangler d1 execute tinysite_db --remote --file=./migrations/0008_custom_sub
 npx wrangler d1 execute tinysite_db --remote --file=./migrations/0009_plan_custom_domain_limits.sql
 ```
 
+## Stripe 月度订阅
+
+Pro、Plus、Ultra 使用 Stripe Checkout 月度订阅。套餐只在签名验证通过的 `invoice.paid` Webhook 到达后生效，Checkout 前端跳转不会直接发放权益。管理员后台可查看订阅、付款、失败事件，并执行全额退款或立即取消订阅。
+
+在 Stripe 分别创建三个人民币月度 Price，将 Price ID 配置为 `STRIPE_PRICE_PRO`、`STRIPE_PRICE_PLUS`、`STRIPE_PRICE_ULTRA`，并设置：
+
+```toml
+[vars]
+STRIPE_ENABLED = "true"
+STRIPE_PRICE_PRO = "price_..."
+STRIPE_PRICE_PLUS = "price_..."
+STRIPE_PRICE_ULTRA = "price_..."
+```
+
+密钥只能保存为 Worker Secret：
+
+```bash
+npx wrangler secret put STRIPE_SECRET_KEY
+npx wrangler secret put STRIPE_WEBHOOK_SECRET
+```
+
+Stripe Webhook 地址为 `https://ts.yongkl.cc/api/stripe/webhook`，订阅以下事件：
+
+- `checkout.session.completed`
+- `customer.subscription.created`
+- `customer.subscription.updated`
+- `customer.subscription.deleted`
+- `invoice.paid`
+- `invoice.payment_failed`
+- `charge.refunded`
+
+已有数据库需要先执行迁移，再部署：
+
+```bash
+npx wrangler d1 execute tinysite_db --remote --file=./migrations/0010_stripe_billing.sql
+```
+
 ## 本地开发
 
 ### 前置条件

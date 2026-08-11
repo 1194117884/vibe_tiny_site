@@ -62,6 +62,11 @@ function fmtTime(ts) {
   return new Date(ts).toLocaleString('zh-CN', { hour12: false });
 }
 
+function fmtMoney(amount, currency = 'cny') {
+  try { return new Intl.NumberFormat('zh-CN', { style: 'currency', currency: String(currency).toUpperCase() }).format((Number(amount) || 0) / 100); }
+  catch { return `${(Number(amount) || 0) / 100} ${String(currency).toUpperCase()}`; }
+}
+
 function timeAgo(ts) {
   if (!ts) return '';
   const diff = Date.now() - ts;
@@ -191,7 +196,8 @@ const api = {
   googleLogin: (credential) => req('/api/auth/google', { method: 'POST', body: JSON.stringify({ credential }) }),
   logout: () => req('/api/auth/logout', { method: 'POST' }),
   accountUsage: () => req('/api/account/usage'),
-  selectPlan: (planId) => req('/api/account/plan', { method: 'POST', body: JSON.stringify({ planId }) }),
+  createCheckout: (planId) => req('/api/account/checkout', { method: 'POST', body: JSON.stringify({ planId }) }),
+  createBillingPortal: () => req('/api/account/billing-portal', { method: 'POST' }),
   redeemCode: (code) => req('/api/account/redeem-code', { method: 'POST', body: JSON.stringify({ code }) }),
   adminOverview: () => req('/api/admin/overview'),
   adminUsers: () => req('/api/admin/users'),
@@ -199,6 +205,9 @@ const api = {
   adminAuditLogs: () => req('/api/admin/audit-logs'),
   adminEntitlements: () => req('/api/admin/entitlements'),
   updateEntitlement: (id, status) => req(`/api/admin/entitlements/${id}`, { method: 'PATCH', body: JSON.stringify({ status }) }),
+  adminBilling: () => req('/api/admin/billing'),
+  refundPayment: (id) => req(`/api/admin/billing/payments/${id}/refund`, { method: 'POST' }),
+  cancelSubscription: (id) => req(`/api/admin/billing/subscriptions/${encodeURIComponent(id)}/cancel`, { method: 'POST' }),
   updateUser: (id, data) => req(`/api/admin/users/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
   adminProjects: () => req('/api/admin/projects'),
   adminProjectDetail: (id) => req(`/api/admin/projects/${id}`),
@@ -382,7 +391,7 @@ async function renderAdmin() {
   }
   app.innerHTML = `<div class="page-head"><div><h1 class="page-title">运营后台</h1><div class="page-sub">用户、项目与套餐赠送码</div></div></div><div id="admin-body" class="skeleton">加载中…</div>`;
   try {
-    const [overview, userData, projectData, codeData, auditData, entitlementData] = await Promise.all([api.adminOverview(), api.adminUsers(), api.adminProjects(), api.activationCodes(), api.adminAuditLogs(), api.adminEntitlements()]);
+    const [overview, userData, projectData, codeData, auditData, entitlementData, billingData] = await Promise.all([api.adminOverview(), api.adminUsers(), api.adminProjects(), api.activationCodes(), api.adminAuditLogs(), api.adminEntitlements(), api.adminBilling()]);
     $('#admin-body').innerHTML = `<div class="project-meta" style="font-size:16px;gap:28px;margin-bottom:28px"><span>用户 <b>${overview.users}</b></span><span>项目 <b>${overview.projects}</b></span><span>已发布版本 <b>${overview.active_versions}</b></span><span>可用激活码 <b>${overview.available_codes}</b></span></div>
       <div class="card" style="margin-bottom:24px"><h3>生成套餐赠送码</h3><div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px"><select id="code-plan"><option value="pro">Pro</option><option value="plus">Plus</option><option value="ultra">Ultra</option><option value="free">Free</option></select><input id="code-days" type="number" value="30" min="1" max="3650" title="赠送天数" style="width:90px"/><input id="code-count" type="number" value="1" min="1" max="1000" title="可兑换次数" style="width:90px"/><input id="code-expires" type="datetime-local" title="兑换码有效期（留空为永久）"/><button class="btn" id="create-code">生成</button></div><p class="page-sub">兑换后会生成独立的套餐权益记录，不会用于注册。</p><p id="new-code" class="page-sub"></p></div>
       <div class="card" style="margin-bottom:24px"><h3>用户</h3><div style="overflow:auto"><table><thead><tr><th>邮箱</th><th>当前套餐</th><th>角色</th><th>项目</th><th>状态</th><th>赠送套餐权益</th><th>操作</th></tr></thead><tbody>${userData.users.map((u) => `<tr data-user="${esc(u.id)}"><td>${esc(u.email)}</td><td>${esc(u.plan_id)}<br><small>${u.plan_expires_at ? `至 ${fmtTime(u.plan_expires_at)}` : '基础/长期'}</small></td><td>${esc(u.role)}</td><td>${u.project_count}</td><td><select data-status><option value="active" ${u.status === 'active' ? 'selected' : ''}>active</option><option value="suspended" ${u.status === 'suspended' ? 'selected' : ''}>suspended</option></select></td><td><select data-grant-plan><option value="pro">Pro</option><option value="plus">Plus</option><option value="ultra">Ultra</option></select><input data-grant-days type="number" value="30" min="1" max="3650" style="width:72px"/> 天 <button class="btn btn-ghost" data-grant-user>赠送</button></td><td><button class="btn btn-ghost" data-save-user>保存状态</button></td></tr>`).join('')}</tbody></table></div></div>
@@ -396,7 +405,9 @@ async function renderAdmin() {
           : '暂无';
         return `<tr><td><code>${esc(c.code_display || '旧兑换码无法恢复')}</code></td><td>${esc(c.plan_id)}</td><td>${c.duration_days} 天</td><td>${c.used_count}/${c.max_uses}<br><small>${state}</small></td><td>${c.expires_at ? fmtTime(c.expires_at) : '永久'}</td><td>${records}</td><td><button class="btn btn-ghost" data-delete-code="${esc(c.id)}">作废</button></td></tr>`;
       }).join('') || '<tr><td colspan="7">暂无记录</td></tr>'}</tbody></table></div></div>`;
-    $('#admin-body').insertAdjacentHTML('beforeend', `<div class="card" style="margin-top:24px"><h3>套餐权益记录</h3><div style="overflow:auto"><table><thead><tr><th>用户</th><th>套餐</th><th>时长</th><th>来源</th><th>排期</th><th>状态</th><th>操作</th></tr></thead><tbody>${entitlementData.entitlements.map((e) => `<tr><td>${esc(e.email)}</td><td>${esc(e.plan_id)}</td><td>${e.duration_days} 天</td><td>${esc(e.source_type)}</td><td><small>${fmtTime(e.starts_at)}<br/>至 ${fmtTime(e.ends_at)}</small></td><td>${esc(e.status)}</td><td>${['active', 'queued'].includes(e.status) ? `<button class="btn btn-ghost" data-refund-entitlement="${esc(e.id)}">退款</button><button class="btn btn-ghost" data-revoke-entitlement="${esc(e.id)}">撤销</button>` : '-'}</td></tr>`).join('') || '<tr><td colspan="7">暂无权益记录</td></tr>'}</tbody></table></div></div>`);
+    $('#admin-body').insertAdjacentHTML('beforeend', `<div class="card" style="margin-top:24px"><h3>Stripe 订阅</h3><p class="page-sub">${billingData.configured ? 'Stripe 已配置' : 'Stripe 尚未启用或配置不完整'}</p><div style="overflow:auto"><table><thead><tr><th>用户</th><th>套餐</th><th>订阅</th><th>状态</th><th>当前周期</th><th>操作</th></tr></thead><tbody>${billingData.subscriptions.map((s) => `<tr><td>${esc(s.email)}</td><td>${esc(s.plan_id).toUpperCase()}</td><td><code>${esc(s.stripe_subscription_id)}</code></td><td>${esc(s.status)}${s.cancel_at_period_end ? '<br><small>周期结束后取消</small>' : ''}</td><td>${fmtTime(s.current_period_end)}</td><td>${!['canceled', 'incomplete_expired'].includes(s.status) ? `<button class="btn btn-ghost" data-cancel-subscription="${esc(s.stripe_subscription_id)}">立即取消</button>` : '-'}</td></tr>`).join('') || '<tr><td colspan="6">暂无 Stripe 订阅</td></tr>'}</tbody></table></div></div>`);
+    $('#admin-body').insertAdjacentHTML('beforeend', `<div class="card" style="margin-top:24px"><h3>Stripe 付款记录</h3><div style="overflow:auto"><table><thead><tr><th>时间</th><th>用户</th><th>套餐</th><th>金额</th><th>状态</th><th>发票</th><th>操作</th></tr></thead><tbody>${billingData.payments.map((p) => `<tr><td>${fmtTime(p.created_at)}</td><td>${esc(p.email)}</td><td>${esc(p.plan_id).toUpperCase()}</td><td>${fmtMoney(p.amount_total, p.currency)}${p.amount_refunded ? `<br><small>已退 ${fmtMoney(p.amount_refunded, p.currency)}</small>` : ''}</td><td>${esc(p.status)}${p.failure_message ? `<br><small>${esc(p.failure_message)}</small>` : ''}</td><td><code>${esc(p.stripe_invoice_id)}</code></td><td>${['succeeded', 'partially_refunded'].includes(p.status) ? `<button class="btn btn-ghost" data-refund-payment="${esc(p.id)}">全额退款</button>` : '-'}</td></tr>`).join('') || '<tr><td colspan="7">暂无 Stripe 付款</td></tr>'}</tbody></table></div>${billingData.failed_events.length ? `<div class="page-sub" style="margin:14px"><b>Webhook 失败事件</b><br>${billingData.failed_events.map((e) => `${esc(e.event_type)} · ${esc(e.stripe_event_id)} · ${esc(e.error_message || '-')}`).join('<br>')}</div>` : ''}</div>`);
+    $('#admin-body').insertAdjacentHTML('beforeend', `<div class="card" style="margin-top:24px"><h3>套餐权益记录</h3><div style="overflow:auto"><table><thead><tr><th>用户</th><th>套餐</th><th>时长</th><th>来源</th><th>排期</th><th>状态</th><th>操作</th></tr></thead><tbody>${entitlementData.entitlements.map((e) => `<tr><td>${esc(e.email)}</td><td>${esc(e.plan_id)}</td><td>${e.duration_days} 天</td><td>${esc(e.source_type)}</td><td><small>${fmtTime(e.starts_at)}<br/>至 ${fmtTime(e.ends_at)}</small></td><td>${esc(e.status)}</td><td>${e.source_type !== 'stripe_invoice' && ['active', 'queued'].includes(e.status) ? `<button class="btn btn-ghost" data-refund-entitlement="${esc(e.id)}">退款</button><button class="btn btn-ghost" data-revoke-entitlement="${esc(e.id)}">撤销</button>` : '-'}</td></tr>`).join('') || '<tr><td colspan="7">暂无权益记录</td></tr>'}</tbody></table></div></div>`);
     $('#admin-body').insertAdjacentHTML('beforeend', `<div class="card" style="margin-top:24px"><h3>最近操作记录</h3><div style="overflow:auto"><table><thead><tr><th>时间</th><th>操作者</th><th>操作</th><th>对象</th><th>详情</th></tr></thead><tbody>${auditData.logs.map((log) => `<tr><td>${fmtTime(log.created_at)}</td><td>${esc(log.actor_email || '系统')}</td><td>${esc(log.action)}</td><td>${esc(log.target_type)} · ${esc(log.target_id || '-')}</td><td><small>${esc(log.detail || '-')}</small></td></tr>`).join('') || '<tr><td colspan="5">暂无操作记录</td></tr>'}</tbody></table></div></div>`);
     $('#create-code').onclick = async () => {
       try {
@@ -435,6 +446,14 @@ async function renderAdmin() {
       const action = refund ? '退款' : '撤销';
       if (!(await confirmModal(`${action}套餐权益`, `${action}后仅移除此条权益，并自动重新排期其他权益。`, action, true))) return;
       try { await api.updateEntitlement(id, refund ? 'refunded' : 'revoked'); toast(`权益已${action}`); renderAdmin(); } catch (e) { toast(e.message, 'error'); }
+    }; });
+    document.querySelectorAll('[data-refund-payment]').forEach((button) => { button.onclick = async () => {
+      if (!(await confirmModal('全额退款', '将在 Stripe 创建全额退款；退款成功后撤销对应套餐权益。订阅不会自动取消。', '确认退款', true))) return;
+      try { await api.refundPayment(button.dataset.refundPayment); toast('退款已提交'); renderAdmin(); } catch (e) { toast(e.message, 'error'); }
+    }; });
+    document.querySelectorAll('[data-cancel-subscription]').forEach((button) => { button.onclick = async () => {
+      if (!(await confirmModal('立即取消订阅', '将立即停止 Stripe 自动续费；已经付款获得的套餐时长不会删除。', '确认取消', true))) return;
+      try { await api.cancelSubscription(button.dataset.cancelSubscription); toast('订阅已取消'); renderAdmin(); } catch (e) { toast(e.message, 'error'); }
     }; });
   } catch (e) { $('#admin-body').textContent = `加载失败：${e.message}`; }
 }
@@ -560,7 +579,7 @@ async function renderHome() {
   await load();
 }
 
-function renderUsage({ plan, usage, plans, entitlements }) {
+function renderUsage({ plan, usage, plans, entitlements, billing }) {
   const progress = (value, limit) => Math.min(100, Math.round((value / Math.max(Number(limit), 1)) * 100));
   const card = (label, value, limit, note) => `<div class="usage-card"><span>${label}</span><strong>${value}</strong><small>${note || `上限 ${limit}`}</small><div class="usage-meter"><i style="width:${progress(value, limit)}%"></i></div></div>`;
   const expires = plan.expires_at ? `到期：${fmtTime(plan.expires_at)}` : '内测套餐 · 暂无到期日';
@@ -570,21 +589,31 @@ function renderUsage({ plan, usage, plans, entitlements }) {
     ${card('自定义域名', usage.custom_domains, plan.custom_domain_limit, plan.custom_domain_limit ? `${usage.custom_domains} / ${plan.custom_domain_limit} 个域名` : 'Free 套餐不支持')}
     ${card('存储空间', usage.storage_bytes, plan.storage_limit_bytes, `${fmtBytes(usage.storage_bytes)} / ${fmtBytes(plan.storage_limit_bytes)}`)}
     ${card('本月流量', usage.traffic_bytes, plan.traffic_limit_bytes, `${fmtBytes(usage.traffic_bytes)} / ${fmtBytes(plan.traffic_limit_bytes)} · ${usage.period}`)}`;
-  renderPlanCards(plans, plan.id, entitlements);
+  renderPlanCards(plans, plan.id, entitlements, billing);
 }
 
-function renderPlanCards(plans, currentPlanId, entitlements) {
+function renderPlanCards(plans, currentPlanId, entitlements, billing = {}) {
   const price = (cents) => cents ? `¥${(cents / 100).toFixed(1)} / 月` : '免费';
   const queue = entitlements.filter((entry) => ['active', 'queued'].includes(entry.status));
-  $('#plans').innerHTML = `<div class="section-heading"><div><h2>套餐中心</h2><p>购买和赠送权益会独立排队。</p></div><form id="redeem-form" class="redeem-form"><input name="code" placeholder="输入套餐赠送码" required/><button class="btn" type="submit">兑换</button></form></div><div class="plan-grid">${plans.map((plan) => {
+  const subscription = billing.subscription;
+  const hasSubscription = subscription && !['canceled', 'incomplete_expired'].includes(subscription.status);
+  const subscriptionPanel = hasSubscription ? `<div class="entitlement-queue"><h3>Stripe 订阅</h3><p>${esc(subscription.plan_id).toUpperCase()} · ${esc(subscription.status)}${subscription.cancel_at_period_end ? ' · 周期结束后取消' : ''}</p><button class="btn btn-sm btn-ghost" id="manage-subscription">管理订阅与付款方式</button></div>` : '';
+  $('#plans').innerHTML = `<div class="section-heading"><div><h2>套餐中心</h2><p>付款确认后，套餐权益会自动生效。</p></div><form id="redeem-form" class="redeem-form"><input name="code" placeholder="输入套餐赠送码" required/><button class="btn" type="submit">兑换</button></form></div>${subscriptionPanel}<div class="plan-grid">${plans.map((plan) => {
     const active = plan.id === currentPlanId;
     const purchasable = plan.monthly_price_cents > 0;
     const domainBenefit = plan.custom_domain_limit
       ? `${plan.custom_domain_limit} 个自定义域名（每项目 1 个）`
       : '不支持自定义域名';
     const rootBenefit = plan.id === 'ultra' ? '<li>根域名绑定：开发中</li>' : '';
-    return `<article class="plan-card ${active ? 'active' : ''}"><div><span class="plan-name">${esc(plan.id).toUpperCase()}</span><strong>${price(plan.monthly_price_cents)}</strong></div><ul><li>${plan.project_limit} 个项目</li><li>${domainBenefit}</li>${rootBenefit}<li>${fmtBytes(plan.storage_limit_bytes)} 存储</li><li>${fmtBytes(plan.file_size_limit_bytes)} 单文件上限</li><li>${fmtBytes(plan.traffic_limit_bytes)} / 月流量</li></ul><button class="btn ${active ? 'btn-ghost' : ''}" data-select-plan="${esc(plan.id)}" ${purchasable ? '' : 'disabled'}>${purchasable ? (active ? '续费 30 天' : '模拟购买 30 天') : '基础套餐'}</button></article>`;
-  }).join('')}</div><div class="entitlement-queue"><h3>套餐权益队列</h3>${queue.length ? queue.map((entry) => `<div class="entitlement-row ${entry.status}"><span>${entry.status === 'active' ? '当前生效' : '后续生效'}</span><b>${esc(entry.plan_id).toUpperCase()}</b><small>${entry.duration_days} 天 · ${fmtTime(entry.starts_at)} → ${fmtTime(entry.ends_at)} · ${entry.source_type === 'activation_code' ? '赠送码' : '模拟购买'}</small></div>`).join('') : '<p>当前没有付费套餐权益，使用 Free 基础套餐。</p>'}</div>`;
+    const buttonText = !purchasable ? '基础套餐'
+      : !billing.enabled ? '在线支付暂未开放'
+      : hasSubscription ? (subscription.plan_id === plan.id ? '当前订阅' : '前往订阅管理')
+      : `订阅 ${plan.id.toUpperCase()}`;
+    return `<article class="plan-card ${active ? 'active' : ''}"><div><span class="plan-name">${esc(plan.id).toUpperCase()}</span><strong>${price(plan.monthly_price_cents)}</strong></div><ul><li>${plan.project_limit} 个项目</li><li>${domainBenefit}</li>${rootBenefit}<li>${fmtBytes(plan.storage_limit_bytes)} 存储</li><li>${fmtBytes(plan.file_size_limit_bytes)} 单文件上限</li><li>${fmtBytes(plan.traffic_limit_bytes)} / 月流量</li></ul><button class="btn ${active ? 'btn-ghost' : ''}" data-select-plan="${esc(plan.id)}" ${purchasable && billing.enabled ? '' : 'disabled'}>${buttonText}</button></article>`;
+  }).join('')}</div><div class="entitlement-queue"><h3>套餐权益队列</h3>${queue.length ? queue.map((entry) => {
+    const source = entry.source_type === 'activation_code' ? '赠送码' : entry.source_type === 'stripe_invoice' ? 'Stripe 付款' : entry.source_type === 'admin_grant' ? '管理员赠送' : '历史测试权益';
+    return `<div class="entitlement-row ${entry.status}"><span>${entry.status === 'active' ? '当前生效' : '后续生效'}</span><b>${esc(entry.plan_id).toUpperCase()}</b><small>${entry.duration_days} 天 · ${fmtTime(entry.starts_at)} → ${fmtTime(entry.ends_at)} · ${source}</small></div>`;
+  }).join('') : '<p>当前没有付费套餐权益，使用 Free 基础套餐。</p>'}</div>`;
   $('#redeem-form').onsubmit = async (e) => {
     e.preventDefault();
     const form = e.currentTarget;
@@ -601,16 +630,18 @@ function renderPlanCards(plans, currentPlanId, entitlements) {
   document.querySelectorAll('[data-select-plan]').forEach((button) => { button.onclick = async () => {
     const original = button.textContent;
     button.disabled = true;
-    button.textContent = '模拟支付处理中…';
+    button.textContent = '正在前往安全支付…';
     try {
-      await new Promise((resolve) => setTimeout(resolve, 650));
-      const result = await api.selectPlan(button.dataset.selectPlan);
-      CURRENT_USER = result.user;
-      updateAccountBar();
-      toast('套餐已生效');
-      renderHome();
+      const result = hasSubscription ? await api.createBillingPortal() : await api.createCheckout(button.dataset.selectPlan);
+      location.href = result.url;
     } catch (e) { button.disabled = false; button.textContent = original; toast(e.message, 'error'); }
   }; });
+  const manage = $('#manage-subscription');
+  if (manage) manage.onclick = async () => {
+    manage.disabled = true;
+    try { location.href = (await api.createBillingPortal()).url; }
+    catch (e) { manage.disabled = false; toast(e.message, 'error'); }
+  };
 }
 
 function renderGrid(projects) {
@@ -1293,4 +1324,11 @@ fetch('/api/config')
   .then(async () => {
     try { CURRENT_USER = (await api.me()).user; } catch { CURRENT_USER = null; }
   })
-  .finally(() => { updateAccountBar(); route(); });
+  .finally(() => {
+    updateAccountBar();
+    route();
+    const checkout = new URLSearchParams(location.search).get('checkout');
+    if (checkout === 'success') toast('付款已完成，套餐将在 Stripe 确认后自动生效');
+    if (checkout === 'cancelled') toast('已取消付款', 'error');
+    if (checkout) history.replaceState(null, '', `${location.pathname}${location.hash || '#/'}`);
+  });

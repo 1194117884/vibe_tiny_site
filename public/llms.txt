@@ -26,6 +26,7 @@ TinySite lets users create projects, upload HTML/CSS/JS (or ZIP archives), stage
 - Versions: notes, change list, independent historical URLs, pagination, one-click rollback
 - Custom subdomains: exact third-, fourth-, and deeper-level hostnames for Pro / Plus / Ultra
 - Plans: Free / Pro / Plus / Ultra with project, storage, monthly traffic, and custom-domain limits
+- Billing: Stripe Checkout monthly subscriptions; signed Webhooks activate paid entitlements
 - Theming: auto / light / dark
 
 ## SEO & discovery endpoints (console host)

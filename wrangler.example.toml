@@ -35,9 +35,17 @@ GOOGLE_CLIENT_ID = ""
 CLOUDFLARE_SAAS_ZONE_ID = "REPLACE_WITH_CLOUDFLARE_SAAS_ZONE_ID"
 SAAS_CNAME_TARGET = "customers.example.com"
 CUSTOM_DOMAINS_ENABLED = "false"
+# Stripe recurring subscription price IDs. Keep disabled until all prices,
+# secrets and the webhook endpoint are configured.
+STRIPE_ENABLED = "false"
+STRIPE_PRICE_PRO = "price_..."
+STRIPE_PRICE_PLUS = "price_..."
+STRIPE_PRICE_ULTRA = "price_..."
 
 # Store the narrowly scoped API token as a Worker secret, never in this file:
 #   npx wrangler secret put CLOUDFLARE_API_TOKEN
+#   npx wrangler secret put STRIPE_SECRET_KEY
+#   npx wrangler secret put STRIPE_WEBHOOK_SECRET
 
 [triggers]
 # Reconcile pending hostname ownership and TLS state.

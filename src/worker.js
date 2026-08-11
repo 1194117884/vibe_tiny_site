@@ -792,12 +792,280 @@ async function ensureStorageLimit(env, account, version, pendingRows) {
   return null;
 }
 
+// ------------------------------- Stripe 订阅 -------------------------------
+
+const STRIPE_API_VERSION = '2024-06-20';
+
+function stripePriceId(env, planId) {
+  return ({ pro: env.STRIPE_PRICE_PRO, plus: env.STRIPE_PRICE_PLUS, ultra: env.STRIPE_PRICE_ULTRA })[planId] || '';
+}
+
+function stripeConfigured(env) {
+  return String(env.STRIPE_ENABLED || '').toLowerCase() === 'true' &&
+    Boolean(env.STRIPE_SECRET_KEY && env.STRIPE_WEBHOOK_SECRET &&
+      stripePriceId(env, 'pro') && stripePriceId(env, 'plus') && stripePriceId(env, 'ultra'));
+}
+
+async function stripeRequest(env, path, { method = 'GET', params } = {}) {
+  if (!env.STRIPE_SECRET_KEY) throw new Error('Stripe API 尚未配置');
+  const headers = {
+    Authorization: `Bearer ${env.STRIPE_SECRET_KEY}`,
+    'Stripe-Version': STRIPE_API_VERSION,
+  };
+  let body;
+  if (params) {
+    headers['Content-Type'] = 'application/x-www-form-urlencoded';
+    body = new URLSearchParams(Object.entries(params).filter(([, value]) => value !== undefined && value !== null)
+      .map(([key, value]) => [key, String(value)])).toString();
+  }
+  const response = await fetch(`https://api.stripe.com/v1${path}`, { method, headers, body });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error?.message || `Stripe API 请求失败 (${response.status})`);
+  return data;
+}
+
+function stripeObjectId(value) {
+  return typeof value === 'string' ? value : value?.id || null;
+}
+
+function constantTimeEqual(a, b) {
+  if (a.length !== b.length) return false;
+  let mismatch = 0;
+  for (let i = 0; i < a.length; i++) mismatch |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return mismatch === 0;
+}
+
+async function verifyStripeWebhookSignature(payload, signatureHeader, secret, nowSeconds = Math.floor(Date.now() / 1000)) {
+  const parts = String(signatureHeader || '').split(',').map((part) => part.trim().split('='));
+  const timestamp = Number(parts.find(([key]) => key === 't')?.[1]);
+  const signatures = parts.filter(([key]) => key === 'v1').map(([, value]) => value);
+  if (!Number.isFinite(timestamp) || !signatures.length || Math.abs(nowSeconds - timestamp) > 300) return false;
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const digest = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`${timestamp}.${payload}`));
+  const expected = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+  return signatures.some((signature) => constantTimeEqual(signature, expected));
+}
+
+async function createStripeCheckout(request, env) {
+  if (!stripeConfigured(env)) return json({ error: '在线支付暂未开放' }, 503);
+  const body = await request.json().catch(() => ({}));
+  const planId = String(body.planId || '');
+  const priceId = stripePriceId(env, planId);
+  if (!priceId) return json({ error: '请选择有效的付费套餐' }, 400);
+  const userId = request.headers.get('x-tinysite-user-id');
+  const user = await env.DB.prepare('SELECT id, email FROM users WHERE id = ?').bind(userId).first();
+  const [target, projects, storage, domains] = await env.DB.batch([
+    env.DB.prepare('SELECT * FROM plans WHERE id = ?').bind(planId),
+    env.DB.prepare('SELECT COUNT(*) AS count FROM projects WHERE user_id = ?').bind(userId),
+    env.DB.prepare(`SELECT COALESCE(SUM(pf.size), 0) AS bytes FROM project_files pf
+      JOIN projects p ON p.id = pf.project_id WHERE p.user_id = ?`).bind(userId),
+    env.DB.prepare(`SELECT COUNT(*) AS count FROM custom_domains d JOIN projects p ON p.id = d.project_id
+      WHERE p.user_id = ? AND d.deleted_at IS NULL`).bind(userId),
+  ]);
+  const plan = target.results[0];
+  if (!plan) return json({ error: '套餐不存在' }, 404);
+  const stripePrice = await stripeRequest(env, `/prices/${encodeURIComponent(priceId)}`);
+  if (!stripePrice.active || stripePrice.currency !== 'cny' || stripePrice.recurring?.interval !== 'month' ||
+      Number(stripePrice.unit_amount) !== Number(plan.monthly_price_cents)) {
+    return json({ error: 'Stripe Price 与 TinySite 套餐价格不一致，已停止创建付款' }, 503);
+  }
+  if (Number(projects.results[0].count) > Number(plan.project_limit) ||
+      Number(storage.results[0].bytes) > Number(plan.storage_limit_bytes) ||
+      Number(domains.results[0].count) > Number(plan.custom_domain_limit)) {
+    return json({ error: '当前资源用量超过目标套餐额度，请先清理项目、文件或自定义域名' }, 409);
+  }
+  const existing = await env.DB.prepare(`SELECT stripe_subscription_id FROM stripe_subscriptions
+    WHERE user_id = ? AND status IN ('active', 'trialing', 'past_due', 'unpaid', 'paused') LIMIT 1`).bind(userId).first();
+  if (existing) return json({ error: '当前已有 Stripe 订阅，请先在订阅管理中处理' }, 409);
+  const customer = await env.DB.prepare('SELECT stripe_customer_id FROM stripe_customers WHERE user_id = ?').bind(userId).first();
+  const origin = new URL(request.url).origin;
+  const params = {
+    mode: 'subscription',
+    success_url: `${origin}/?checkout=success`,
+    cancel_url: `${origin}/?checkout=cancelled`,
+    client_reference_id: userId,
+    'line_items[0][price]': priceId,
+    'line_items[0][quantity]': 1,
+    'metadata[user_id]': userId,
+    'metadata[plan_id]': planId,
+    'subscription_data[metadata][user_id]': userId,
+    'subscription_data[metadata][plan_id]': planId,
+  };
+  if (customer?.stripe_customer_id) params.customer = customer.stripe_customer_id;
+  else params.customer_email = user.email;
+  const session = await stripeRequest(env, '/checkout/sessions', { method: 'POST', params });
+  await audit(env, request, 'stripe.checkout.create', 'user', userId, { planId, checkoutSessionId: session.id });
+  return json({ url: session.url });
+}
+
+async function createStripePortal(request, env) {
+  if (!stripeConfigured(env)) return json({ error: '在线支付暂未开放' }, 503);
+  const userId = request.headers.get('x-tinysite-user-id');
+  const customer = await env.DB.prepare('SELECT stripe_customer_id FROM stripe_customers WHERE user_id = ?').bind(userId).first();
+  if (!customer) return json({ error: '当前账号没有 Stripe 账单资料' }, 404);
+  const session = await stripeRequest(env, '/billing_portal/sessions', {
+    method: 'POST',
+    params: { customer: customer.stripe_customer_id, return_url: new URL(request.url).origin },
+  });
+  return json({ url: session.url });
+}
+
+async function upsertStripeSubscription(env, object, fallback = {}) {
+  const subscriptionId = stripeObjectId(object.id || fallback.subscription);
+  const userId = object.metadata?.user_id || fallback.userId;
+  const planId = object.metadata?.plan_id || fallback.planId;
+  const customerId = stripeObjectId(object.customer || fallback.customer);
+  if (!subscriptionId || !userId || !planId || !customerId) throw new Error('Stripe 订阅缺少 TinySite 映射信息');
+  const now = Date.now();
+  await env.DB.batch([
+    env.DB.prepare(`INSERT INTO stripe_customers (user_id, stripe_customer_id, created_at, updated_at) VALUES (?, ?, ?, ?)
+      ON CONFLICT(user_id) DO UPDATE SET stripe_customer_id = excluded.stripe_customer_id, updated_at = excluded.updated_at`)
+      .bind(userId, customerId, now, now),
+    env.DB.prepare(`INSERT INTO stripe_subscriptions
+      (stripe_subscription_id, user_id, plan_id, stripe_customer_id, status, cancel_at_period_end, current_period_end, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(stripe_subscription_id) DO UPDATE SET plan_id = excluded.plan_id, stripe_customer_id = excluded.stripe_customer_id,
+        status = excluded.status, cancel_at_period_end = excluded.cancel_at_period_end,
+        current_period_end = excluded.current_period_end, updated_at = excluded.updated_at`).bind(
+      subscriptionId, userId, planId, customerId, object.status || fallback.status || 'active',
+      object.cancel_at_period_end ? 1 : 0, object.current_period_end ? Number(object.current_period_end) * 1000 : null, now, now,
+    ),
+  ]);
+}
+
+async function ensureStripeSubscription(env, subscriptionId) {
+  let subscription = await env.DB.prepare('SELECT * FROM stripe_subscriptions WHERE stripe_subscription_id = ?')
+    .bind(subscriptionId).first();
+  if (subscription) return subscription;
+  const remote = await stripeRequest(env, `/subscriptions/${encodeURIComponent(subscriptionId)}`);
+  await upsertStripeSubscription(env, remote);
+  subscription = await env.DB.prepare('SELECT * FROM stripe_subscriptions WHERE stripe_subscription_id = ?')
+    .bind(subscriptionId).first();
+  return subscription;
+}
+
+async function grantStripeInvoice(env, invoice) {
+  const invoiceId = invoice.id;
+  const subscriptionId = stripeObjectId(invoice.subscription);
+  if (!invoiceId || !subscriptionId) throw new Error('Stripe 发票缺少订阅信息');
+  const subscription = await ensureStripeSubscription(env, subscriptionId);
+  if (!subscription) throw new Error('Stripe 订阅尚未完成本地映射');
+  const existing = await env.DB.prepare('SELECT id FROM stripe_payments WHERE stripe_invoice_id = ?').bind(invoiceId).first();
+  if (existing) return;
+  const line = invoice.lines?.data?.find((item) => item.period?.start && item.period?.end) || invoice.lines?.data?.[0];
+  const periodMs = line?.period?.end && line?.period?.start
+    ? Math.max(PLAN_DAY_MS, (Number(line.period.end) - Number(line.period.start)) * 1000)
+    : 30 * PLAN_DAY_MS;
+  const durationDays = Math.max(1, Math.round(periodMs / PLAN_DAY_MS));
+  const now = Date.now();
+  const entitlementId = uid('ent_');
+  const paymentId = uid('pay_');
+  await env.DB.batch([
+    env.DB.prepare(`INSERT INTO plan_entitlements
+      (id, user_id, plan_id, duration_days, source_type, source_ref, status, starts_at, ends_at, created_at)
+      VALUES (?, ?, ?, ?, 'stripe_invoice', ?, 'queued', ?, ?, ?)`).bind(
+      entitlementId, subscription.user_id, subscription.plan_id, durationDays, invoiceId, now, now + periodMs, now,
+    ),
+    env.DB.prepare(`INSERT INTO stripe_payments
+      (id, user_id, plan_id, stripe_invoice_id, stripe_payment_intent_id, stripe_customer_id,
+       stripe_subscription_id, amount_total, currency, status, entitlement_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'succeeded', ?, ?, ?)`).bind(
+      paymentId, subscription.user_id, subscription.plan_id, invoiceId, stripeObjectId(invoice.payment_intent),
+      stripeObjectId(invoice.customer), subscriptionId, Number(invoice.amount_paid || 0), String(invoice.currency || '').toLowerCase(),
+      entitlementId, now, now,
+    ),
+  ]);
+  await refreshEntitlementSchedule(env, subscription.user_id);
+}
+
+async function recordFailedStripeInvoice(env, invoice) {
+  const subscriptionId = stripeObjectId(invoice.subscription);
+  const subscription = subscriptionId ? await ensureStripeSubscription(env, subscriptionId) : null;
+  if (!subscription) throw new Error('Stripe 订阅尚未完成本地映射');
+  const now = Date.now();
+  await env.DB.prepare(`INSERT INTO stripe_payments
+    (id, user_id, plan_id, stripe_invoice_id, stripe_payment_intent_id, stripe_customer_id,
+     stripe_subscription_id, amount_total, currency, status, failure_message, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'failed', ?, ?, ?)
+    ON CONFLICT(stripe_invoice_id) DO UPDATE SET status = 'failed', failure_message = excluded.failure_message,
+      updated_at = excluded.updated_at`).bind(
+    uid('pay_'), subscription.user_id, subscription.plan_id, invoice.id, stripeObjectId(invoice.payment_intent),
+    stripeObjectId(invoice.customer), subscriptionId, Number(invoice.amount_due || 0), String(invoice.currency || '').toLowerCase(),
+    invoice.last_finalization_error?.message || '订阅付款失败', now, now,
+  ).run();
+}
+
+async function applyStripeRefund(env, charge) {
+  const paymentIntentId = stripeObjectId(charge.payment_intent);
+  if (!paymentIntentId) return;
+  const payment = await env.DB.prepare('SELECT * FROM stripe_payments WHERE stripe_payment_intent_id = ?').bind(paymentIntentId).first();
+  if (!payment) return;
+  const refunded = Number(charge.amount_refunded || 0);
+  const fullyRefunded = Boolean(charge.refunded) || refunded >= Number(payment.amount_total);
+  const statements = [env.DB.prepare(`UPDATE stripe_payments SET amount_refunded = ?, status = ?, updated_at = ? WHERE id = ?`)
+    .bind(refunded, fullyRefunded ? 'refunded' : 'partially_refunded', Date.now(), payment.id)];
+  if (fullyRefunded && payment.entitlement_id) {
+    statements.push(env.DB.prepare("UPDATE plan_entitlements SET status = 'refunded' WHERE id = ? AND status IN ('active', 'queued')")
+      .bind(payment.entitlement_id));
+  }
+  await env.DB.batch(statements);
+  if (fullyRefunded) await refreshEntitlementSchedule(env, payment.user_id);
+}
+
+async function processStripeEvent(env, event) {
+  const object = event.data?.object || {};
+  if (event.type === 'checkout.session.completed') {
+    await upsertStripeSubscription(env, { id: object.subscription, customer: object.customer, status: 'active', metadata: object.metadata }, {
+      userId: object.client_reference_id, planId: object.metadata?.plan_id,
+    });
+  } else if (event.type === 'customer.subscription.created' || event.type === 'customer.subscription.updated' || event.type === 'customer.subscription.deleted') {
+    await upsertStripeSubscription(env, object);
+  } else if (event.type === 'invoice.paid') {
+    await grantStripeInvoice(env, object);
+  } else if (event.type === 'invoice.payment_failed') {
+    await recordFailedStripeInvoice(env, object);
+  } else if (event.type === 'charge.refunded') {
+    await applyStripeRefund(env, object);
+  }
+}
+
+async function stripeWebhook(request, env) {
+  if (!env.STRIPE_WEBHOOK_SECRET) return json({ error: 'Stripe Webhook 尚未配置' }, 503);
+  const payload = await request.text();
+  const valid = await verifyStripeWebhookSignature(payload, request.headers.get('stripe-signature'), env.STRIPE_WEBHOOK_SECRET);
+  if (!valid) return json({ error: 'Stripe Webhook 签名无效' }, 400);
+  let event;
+  try { event = JSON.parse(payload); } catch { return json({ error: 'Stripe Webhook 内容无效' }, 400); }
+  if (!event.id || !event.type) return json({ error: 'Stripe Webhook 事件无效' }, 400);
+  const previous = await env.DB.prepare('SELECT status FROM stripe_events WHERE stripe_event_id = ?').bind(event.id).first();
+  if (previous?.status === 'processed') return json({ received: true, duplicate: true });
+  const now = Date.now();
+  if (previous) {
+    await env.DB.prepare("UPDATE stripe_events SET status = 'processing', error_message = NULL WHERE stripe_event_id = ?")
+      .bind(event.id).run();
+  } else {
+    const inserted = await env.DB.prepare(`INSERT OR IGNORE INTO stripe_events
+      (stripe_event_id, event_type, status, created_at) VALUES (?, ?, 'processing', ?)`).bind(event.id, event.type, now).run();
+    if (!inserted.meta.changes) return json({ received: true, duplicate: true });
+  }
+  try {
+    await processStripeEvent(env, event);
+    await env.DB.prepare("UPDATE stripe_events SET status = 'processed', processed_at = ?, error_message = NULL WHERE stripe_event_id = ?")
+      .bind(Date.now(), event.id).run();
+    return json({ received: true });
+  } catch (error) {
+    await env.DB.prepare("UPDATE stripe_events SET status = 'failed', error_message = ? WHERE stripe_event_id = ?")
+      .bind(String(error.message || error).slice(0, 500), event.id).run();
+    return json({ error: 'Stripe 事件处理失败' }, 500);
+  }
+}
+
 /** GET /api/account/usage  当前账号的套餐、存储与当月流量用量。 */
 async function accountUsage(request, env) {
   await refreshEntitlementSchedule(env, request.headers.get('x-tinysite-user-id'));
   const account = await accountFor(request, env);
   const period = new Date().toISOString().slice(0, 7);
-  const [projects, storage, traffic, domainUsage, plans, entitlements] = await env.DB.batch([
+  const [projects, storage, traffic, domainUsage, plans, entitlements, subscriptions] = await env.DB.batch([
     env.DB.prepare('SELECT COUNT(*) AS count FROM projects WHERE user_id = ?').bind(account.id),
     env.DB.prepare(`SELECT COALESCE(SUM(pf.size), 0) AS bytes FROM project_files pf
       JOIN projects p ON p.id = pf.project_id WHERE p.user_id = ?`).bind(account.id),
@@ -808,6 +1076,8 @@ async function accountUsage(request, env) {
       file_size_limit_bytes, traffic_limit_bytes, custom_domain_limit FROM plans ORDER BY monthly_price_cents`),
     env.DB.prepare(`SELECT e.id, e.plan_id, e.duration_days, e.source_type, e.status, e.starts_at, e.ends_at, e.created_at
       FROM plan_entitlements e WHERE e.user_id = ? ORDER BY e.starts_at`).bind(account.id),
+    env.DB.prepare(`SELECT stripe_subscription_id, plan_id, status, cancel_at_period_end, current_period_end
+      FROM stripe_subscriptions WHERE user_id = ? ORDER BY updated_at DESC LIMIT 1`).bind(account.id),
   ]);
   return json({
     plan: {
@@ -837,36 +1107,11 @@ async function accountUsage(request, env) {
       custom_domain_limit: Number(plan.custom_domain_limit || 0),
     })),
     entitlements: entitlements.results,
+    billing: {
+      enabled: stripeConfigured(env),
+      subscription: subscriptions.results[0] || null,
+    },
   });
-}
-
-/** POST /api/account/plan  内测阶段的模拟套餐开通。 */
-async function selectAccountPlan(request, env) {
-  const body = await request.json().catch(() => ({}));
-  const planId = String(body.planId || '');
-  const target = await env.DB.prepare('SELECT * FROM plans WHERE id = ?').bind(planId).first();
-  if (!target) return json({ error: '套餐不存在' }, 404);
-  if (target.id === 'free') return json({ error: 'Free 是基础套餐，无需购买' }, 400);
-  const userId = request.headers.get('x-tinysite-user-id');
-  const [projects, storage] = await env.DB.batch([
-    env.DB.prepare('SELECT COUNT(*) AS count FROM projects WHERE user_id = ?').bind(userId),
-    env.DB.prepare(`SELECT COALESCE(SUM(pf.size), 0) AS bytes FROM project_files pf
-      JOIN projects p ON p.id = pf.project_id WHERE p.user_id = ?`).bind(userId),
-  ]);
-  if (Number(projects.results[0].count) > Number(target.project_limit)) {
-    return json({ error: `当前有 ${projects.results[0].count} 个项目，无法切换到最多 ${target.project_limit} 个项目的套餐` }, 409);
-  }
-  if (Number(storage.results[0].bytes) > Number(target.storage_limit_bytes)) {
-    return json({ error: '当前存储用量超过目标套餐上限，请先删除文件或选择更高套餐' }, 409);
-  }
-  const now = Date.now();
-  const entitlementId = uid('ent_');
-  await env.DB.prepare(`INSERT INTO plan_entitlements (id, user_id, plan_id, duration_days, source_type, status, starts_at, ends_at, created_at)
-    VALUES (?, ?, ?, 30, 'simulated_purchase', 'queued', ?, ?, ?)`).bind(entitlementId, userId, target.id, now, now + 30 * PLAN_DAY_MS, now).run();
-  await refreshEntitlementSchedule(env, userId);
-  await audit(env, request, 'plan.simulated_checkout', 'entitlement', entitlementId, { planId: target.id, durationDays: 30 });
-  const user = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(userId).first();
-  return json({ user: publicUser(user), entitlement_id: entitlementId });
 }
 
 /** POST /api/account/redeem-code  登录后兑换套餐权益。 */
@@ -945,6 +1190,65 @@ async function adminUpdateEntitlement(request, env, url, { id }) {
   await env.DB.prepare('UPDATE plan_entitlements SET status = ? WHERE id = ?').bind(status, id).run();
   await refreshEntitlementSchedule(env, entitlement.user_id);
   await audit(env, request, `entitlement.${status}`, 'entitlement', id, { userId: entitlement.user_id, planId: entitlement.plan_id });
+  return json({ ok: true });
+}
+
+async function adminListBilling(request, env) {
+  const [payments, subscriptions, failedEvents] = await env.DB.batch([
+    env.DB.prepare(`SELECT p.*, u.email FROM stripe_payments p JOIN users u ON u.id = p.user_id
+      ORDER BY p.created_at DESC LIMIT 200`),
+    env.DB.prepare(`SELECT s.*, u.email FROM stripe_subscriptions s JOIN users u ON u.id = s.user_id
+      ORDER BY s.updated_at DESC LIMIT 200`),
+    env.DB.prepare(`SELECT stripe_event_id, event_type, error_message, created_at FROM stripe_events
+      WHERE status = 'failed' ORDER BY created_at DESC LIMIT 50`),
+  ]);
+  return json({
+    configured: stripeConfigured(env),
+    payments: payments.results,
+    subscriptions: subscriptions.results,
+    failed_events: failedEvents.results,
+  });
+}
+
+async function adminRefundStripePayment(request, env, url, { id }) {
+  const payment = await env.DB.prepare(`SELECT * FROM stripe_payments
+    WHERE id = ? AND status IN ('succeeded', 'partially_refunded')`).bind(id).first();
+  if (!payment) return json({ error: '付款不存在或已无法退款' }, 404);
+  if (!payment.stripe_payment_intent_id) return json({ error: '该付款缺少 Stripe PaymentIntent，需在 Stripe 后台处理' }, 409);
+  const refund = await stripeRequest(env, '/refunds', {
+    method: 'POST',
+    params: {
+      payment_intent: payment.stripe_payment_intent_id,
+      'metadata[tinysite_payment_id]': payment.id,
+    },
+  });
+  const now = Date.now();
+  const completed = refund.status === 'succeeded';
+  const statements = [env.DB.prepare(`UPDATE stripe_payments SET status = ?, amount_refunded = ?,
+    updated_at = ? WHERE id = ?`).bind(completed ? 'refunded' : 'refund_pending', completed ? payment.amount_total : payment.amount_refunded, now, payment.id)];
+  if (completed && payment.entitlement_id) {
+    statements.push(env.DB.prepare("UPDATE plan_entitlements SET status = 'refunded' WHERE id = ? AND status IN ('active', 'queued')")
+      .bind(payment.entitlement_id));
+  }
+  await env.DB.batch(statements);
+  if (completed) await refreshEntitlementSchedule(env, payment.user_id);
+  await audit(env, request, 'stripe.payment.refund', 'stripe_payment', payment.id, {
+    stripeRefundId: refund.id, stripeInvoiceId: payment.stripe_invoice_id,
+  });
+  return json({ ok: true, refund_id: refund.id, status: refund.status });
+}
+
+async function adminCancelStripeSubscription(request, env, url, { id }) {
+  const subscription = await env.DB.prepare(`SELECT * FROM stripe_subscriptions
+    WHERE stripe_subscription_id = ? AND status NOT IN ('canceled', 'incomplete_expired')`).bind(id).first();
+  if (!subscription) return json({ error: '订阅不存在或已经结束' }, 404);
+  const canceled = await stripeRequest(env, `/subscriptions/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  await env.DB.prepare(`UPDATE stripe_subscriptions SET status = ?, cancel_at_period_end = 0,
+    current_period_end = ?, updated_at = ? WHERE stripe_subscription_id = ?`).bind(
+    canceled.status || 'canceled', canceled.current_period_end ? Number(canceled.current_period_end) * 1000 : subscription.current_period_end,
+    Date.now(), id,
+  ).run();
+  await audit(env, request, 'stripe.subscription.cancel', 'stripe_subscription', id, { userId: subscription.user_id });
   return json({ ok: true });
 }
 
@@ -1833,6 +2137,9 @@ const apiRoutes = [
   ['GET', '/api/admin/audit-logs', adminListAuditLogs],
   ['GET', '/api/admin/entitlements', adminListEntitlements],
   ['PATCH', '/api/admin/entitlements/:id', adminUpdateEntitlement],
+  ['GET', '/api/admin/billing', adminListBilling],
+  ['POST', '/api/admin/billing/payments/:id/refund', adminRefundStripePayment],
+  ['POST', '/api/admin/billing/subscriptions/:id/cancel', adminCancelStripeSubscription],
   ['GET', '/api/admin/projects', adminListProjects],
   ['GET', '/api/admin/projects/:id', adminProjectDetail],
   ['DELETE', '/api/admin/projects/:id', adminDeleteProject],
@@ -1840,7 +2147,8 @@ const apiRoutes = [
   ['POST', '/api/admin/activation-codes', adminCreateActivationCode],
   ['DELETE', '/api/admin/activation-codes/:id', adminDeleteActivationCode],
   ['GET', '/api/account/usage', accountUsage],
-  ['POST', '/api/account/plan', selectAccountPlan],
+  ['POST', '/api/account/checkout', createStripeCheckout],
+  ['POST', '/api/account/billing-portal', createStripePortal],
   ['POST', '/api/account/redeem-code', redeemActivationCode],
   ['POST', '/api/account/password', changePassword],
   ['POST', '/api/projects', createProject],
@@ -1862,6 +2170,7 @@ const apiRoutes = [
   ['POST', '/api/versions/:id/abort', abortVersion],
   ['POST', '/api/domains/:id/verify', verifyProjectDomain],
   ['DELETE', '/api/domains/:id', deleteProjectDomain],
+  ['POST', '/api/stripe/webhook', stripeWebhook],
 ];
 
 async function handleApi(request, env, url) {
@@ -1869,7 +2178,7 @@ async function handleApi(request, env, url) {
     if (method !== request.method) continue;
     const params = matchPath(pattern, url.pathname);
     if (!params) continue;
-    const isPublic = pattern === '/api/config' || pattern.startsWith('/api/auth/');
+    const isPublic = pattern === '/api/config' || pattern.startsWith('/api/auth/') || pattern === '/api/stripe/webhook';
     if (isPublic) return handler(request, env, url, params);
     let user = await currentUser(request, env);
     if (!user) return json({ error: '请先登录' }, 401);
@@ -1886,7 +2195,7 @@ async function handleApi(request, env, url) {
   return json({ error: '接口不存在' }, 404);
 }
 
-export const __test = { normalizeCustomSubdomain, domainStatusFromCloudflare };
+export const __test = { normalizeCustomSubdomain, domainStatusFromCloudflare, verifyStripeWebhookSignature };
 
 export default {
   async fetch(request, env, ctx) {
