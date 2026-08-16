@@ -727,6 +727,7 @@ async function renderProject(id) {
       <div class="workspace-head">
         <div><h2 class="section-title">文件工作区</h2><p>所有操作先进入草稿，发布版本时才一次性上线。当前 ${esc(accountData.plan.id).toUpperCase()} 套餐单文件上限 ${fmtBytes(accountData.plan.file_size_limit_bytes)}。</p></div>
         <div class="workspace-actions">
+          <button class="btn btn-sm btn-ghost" id="btn-refresh-files" type="button"><i data-lucide="refresh-cw"></i>刷新</button>
           <button class="btn btn-sm btn-ghost" id="btn-pick-files" type="button"><i data-lucide="upload"></i>上传文件</button>
           <button class="btn btn-sm btn-ghost" id="btn-pick-dir" type="button"><i data-lucide="folder-up"></i>上传文件夹</button>
           <button class="btn btn-sm btn-ghost" id="btn-new-folder" type="button"><i data-lucide="folder-plus"></i>新建文件夹</button>
@@ -979,6 +980,7 @@ async function renderProject(id) {
     if (resetVersionPage) versionPage = 1;
     [{ project }, versionsData, currentFilesData] = await Promise.all([api.getProject(project.id), api.listVersions(project.id, versionPage), api.listFiles(project.id)]);
     renderVersions();
+    renderFileWorkspace();
   }
 
   renderVersions();
@@ -988,6 +990,15 @@ async function renderProject(id) {
   const inputFiles = $('#input-files');
   const inputDir = $('#input-dir');
 
+  $('#btn-refresh-files').onclick = async () => {
+    const button = $('#btn-refresh-files');
+    button.disabled = true;
+    try {
+      await refresh();
+      toast('文件工作区已刷新');
+    } catch (e) { toast(`刷新失败:${e.message}`, 'error'); }
+    finally { button.disabled = false; }
+  };
   $('#btn-pick-files').onclick = (e) => { e.stopPropagation(); inputFiles.click(); };
   $('#btn-pick-dir').onclick = (e) => { e.stopPropagation(); inputDir.click(); };
   $('#btn-new-folder').onclick = async () => {
